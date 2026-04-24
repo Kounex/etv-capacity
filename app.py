@@ -313,14 +313,19 @@ def main() -> None:
             if open_trainings:
                 st.subheader("📋 Noch offen")
                 for idx, row in open_trainings:
-                    if st.button(
-                        f"🕐 {row['Uhrzeit']}  ·  {row['Trainingsart']}  ·  {row['Halle']}",
-                        key=f"open_{idx}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.selected_training = row.to_dict()
-                        st.session_state.edit_mode = False
-                        st.rerun()
+                    with st.container(border=True):
+                        col_time, col_name, col_hall = st.columns([2, 3, 3])
+                        col_time.markdown(f"🕐 **{row['Uhrzeit']}**")
+                        col_name.markdown(f"**{row['Trainingsart']}**")
+                        col_hall.markdown(f"📍 {row['Halle']}")
+                        if st.button(
+                            "Auswählen",
+                            key=f"open_{idx}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.selected_training = row.to_dict()
+                            st.session_state.edit_mode = False
+                            st.rerun()
 
             # --- Already submitted ---
             if submitted_trainings:
@@ -328,14 +333,19 @@ def main() -> None:
                 for idx, row, existing in submitted_trainings:
                     cap_value = existing["Kapazität"]
                     emoji_key = CAPACITY_LABEL_TO_KEY.get(cap_value, cap_value)
-                    if st.button(
-                        f"🕐 {row['Uhrzeit']}  ·  {row['Trainingsart']}  ·  {emoji_key}",
-                        key=f"done_{idx}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.selected_training = row.to_dict()
-                        st.session_state.edit_mode = False
-                        st.rerun()
+                    with st.container(border=True):
+                        col_time, col_name, col_hall = st.columns([2, 3, 3])
+                        col_time.markdown(f"🕐 **{row['Uhrzeit']}**")
+                        col_name.markdown(f"**{row['Trainingsart']}**")
+                        col_hall.markdown(f"📍 {row['Halle']}")
+                        if st.button(
+                            f"{emoji_key}",
+                            key=f"done_{idx}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.selected_training = row.to_dict()
+                            st.session_state.edit_mode = False
+                            st.rerun()
 
         # --- Missing entries from this & last week ---
         st.divider()
@@ -397,16 +407,21 @@ def main() -> None:
                     expanded=False,
                 ):
                     for day_name, row in sorted(entries, key=lambda x: x[1]["Uhrzeit"]):
-                        if st.button(
-                            f"🕐 {row['Uhrzeit']}  ·  {row['Trainingsart']}  ·  {row['Halle']}",
-                            key=f"missing_{d.isoformat()}_{row['Uhrzeit']}_{row['Halle']}",
-                            use_container_width=True,
-                        ):
-                            entry = row.to_dict()
-                            entry["_override_date"] = d.isoformat()
-                            st.session_state.selected_training = entry
-                            st.session_state.edit_mode = False
-                            st.rerun()
+                        with st.container(border=True):
+                            col_time, col_name, col_hall = st.columns([2, 3, 3])
+                            col_time.markdown(f"🕐 **{row['Uhrzeit']}**")
+                            col_name.markdown(f"**{row['Trainingsart']}**")
+                            col_hall.markdown(f"📍 {row['Halle']}")
+                            if st.button(
+                                "Nachtragen",
+                                key=f"missing_{d.isoformat()}_{row['Uhrzeit']}_{row['Halle']}",
+                                use_container_width=True,
+                            ):
+                                entry = row.to_dict()
+                                entry["_override_date"] = d.isoformat()
+                                st.session_state.selected_training = entry
+                                st.session_state.edit_mode = False
+                                st.rerun()
 
         if has_missing:
             render_week_section("Diese Woche", this_week_dates)

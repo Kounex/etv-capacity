@@ -9,7 +9,6 @@ services:
       - TZ=Europe/Berlin
       - GOOGLE_SHEET_ID=1pa5NC6giApTMgNqWeC21oXfVDkbYYFgiOAaszuXw45c
       - GOOGLE_SHEET_NAME=Kapazität
-      # Path inside the container (matches the volume mount below)
       - GOOGLE_CREDENTIALS_FILE=/app/credentials.json
     volumes:
       - ./credentials.json:/app/credentials.json:ro

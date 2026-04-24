@@ -6,6 +6,7 @@ services:
     ports:
       - "8501:8501"
     environment:
+      - TZ=Europe/Berlin
       - GOOGLE_SHEET_ID=1pa5NC6giApTMgNqWeC21oXfVDkbYYFgiOAaszuXw45c
       - GOOGLE_SHEET_NAME=Kapazität
       # Path inside the container (matches the volume mount below)

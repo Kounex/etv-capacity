@@ -1,0 +1,14 @@
+services:
+  etv-capacity:
+    image: ghcr.io/kounex/etv-capacity:0.1.0
+    container_name: etv-capacity
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - GOOGLE_SHEET_ID=1pa5NC6giApTMgNqWeC21oXfVDkbYYFgiOAaszuXw45c
+      - GOOGLE_SHEET_NAME=Kapazität
+      # Path inside the container (matches the volume mount below)
+      - GOOGLE_CREDENTIALS_FILE=/app/credentials.json
+    volumes:
+      - ./credentials.json:/app/credentials.json:ro

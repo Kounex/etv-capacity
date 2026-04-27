@@ -105,9 +105,13 @@ def fetch_config(spreadsheet_id: str) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def fetch_data(worksheet: gspread.Worksheet) -> pd.DataFrame:
+def fetch_data(spreadsheet_id: str) -> pd.DataFrame:
     """Read the capacity data sheet into a DataFrame."""
-    records = worksheet.get_all_records()
+    client = get_gspread_client()
+    ws = get_or_create_worksheet(
+        client, spreadsheet_id, DATA_SHEET_NAME, headers=DATA_HEADERS,
+    )
+    records = ws.get_all_records()
     if not records:
         return pd.DataFrame(columns=DATA_HEADERS)
     return pd.DataFrame(records)
@@ -209,29 +213,126 @@ def main() -> None:
         layout="centered",
     )
 
-    # --- Custom CSS: full-width segmented control with equal segments ---
+    # --- ETV Theme CSS ---
     st.markdown(
         """
         <style>
-        /* Override the parent container's fit-content width */
-        div[data-testid="stElementContainer"]:has(> div[data-testid="stButtonGroup"]) {
-            width: 100% !important;
+        @import url('https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700;900&display=swap');
+
+        /* Global font */
+        html, body, [class*="css"] {
+            font-family: "Titillium Web", sans-serif !important;
         }
-        /* Make the segmented control span full width with spacing */
+
+        /* Headlines – ETV style */
+        h1, h2, h3 {
+            font-family: "Titillium Web", sans-serif !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1px !important;
+            font-weight: 900 !important;
+        }
+        h1 {
+            color: #DC0D15 !important;
+            font-size: 2rem !important;
+            line-height: 1.2 !important;
+        }
+        h2 {
+            color: #DC0D15 !important;
+            font-size: 1.3rem !important;
+        }
+
+        /* Primary buttons – ETV red */
+        button[kind="primary"] {
+            background-color: #DC0D15 !important;
+            border-color: #DC0D15 !important;
+            color: white !important;
+        }
+        button[kind="primary"]:hover {
+            background-color: #b00a11 !important;
+            border-color: #b00a11 !important;
+        }
+
+        /* Force segmented control to full width */
+        div[data-testid="stElementContainer"]:has([data-testid="stButtonGroup"]) {
+            width: 100% !important;
+            max-width: none !important;
+        }
         div[data-testid="stButtonGroup"] {
-            width: 100%;
-            margin-top: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        /* Stretch the inner button-group container */
-        div[data-testid="stButtonGroup"] > div[data-baseweb="button-group"] {
             width: 100% !important;
+            max-width: none !important;
+            margin-top: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        [data-baseweb="button-group"][role="radiogroup"] {
+            width: 100% !important;
+            max-width: none !important;
             display: flex !important;
+            flex-wrap: nowrap !important;
         }
-        /* Each segment equal width */
-        div[data-testid="stButtonGroup"] > div[data-baseweb="button-group"] > button {
+        [data-baseweb="button-group"] > button {
             flex: 1 1 0% !important;
+            min-width: 0 !important;
         }
+
+        /* Card containers */
+        div[data-testid="stVerticalBlock"] > div[data-testid="stExpander"] {
+            border-color: #eee !important;
+        }
+
+        /* ETV logo header */
+        .etv-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding-bottom: 1rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid #eee;
+        }
+        .etv-header svg {
+            height: 50px;
+            width: auto;
+            fill: #DC0D15;
+        }
+        .etv-header .etv-title {
+            font-family: "Titillium Web", sans-serif;
+            font-weight: 900;
+            font-size: 1.8rem;
+            color: #DC0D15;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            line-height: 1.2;
+        }
+        .etv-header .etv-subtitle {
+            font-family: "Titillium Web", sans-serif;
+            font-weight: 400;
+            font-size: 0.95rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .etv-day-tag {
+            font-family: "Titillium Web", sans-serif;
+            font-size: 0.9rem;
+            color: #333;
+            border: 1.5px solid #ddd;
+            border-radius: 6px;
+            padding: 0.4rem 0.9rem;
+            white-space: nowrap;
+        }
+        .etv-day-tag strong {
+            color: #DC0D15;
+        }
+        @media (max-width: 500px) {
+            .etv-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.5rem;
+            }
+        }
+
+        /* Hide sidebar */
+        [data-testid="stSidebar"] { display: none; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -242,10 +343,42 @@ def main() -> None:
         st.session_state.selected_training = None
     if "edit_mode" not in st.session_state:
         st.session_state.edit_mode = False
+    if "_data_stale" not in st.session_state:
+        st.session_state._data_stale = True
+    if "_cached_data_df" not in st.session_state:
+        st.session_state._cached_data_df = None
 
-    st.title("🏸 ETV Badminton – Hallenkapazität")
+    # --- Determine today (needed for header) ---
+    today = date.today()
+    today_iso = today.isoformat()
+    today_weekday = WEEKDAY_MAP[today.weekday()]
 
-    # --- Google Sheet config ---
+    # --- ETV Logo + Title + Day Tag ---
+    st.markdown(
+        f"""
+        <div class="etv-header">
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 503.1 708.6">
+                    <path d="M503.1,354.3C503.1,158.6,390.5,0,251.6,0S0,158.6,0,354.3s112.6,354.3,251.6,354.3S503.1,550,503.1,354.3
+                    L503.1,354.3z M66.5,253.9H181v47h-75.3c-2.3,17.3-3.5,35.1-3.5,53.3c0,0.5,0,1.1,0,1.6h75.6v47h-72.7
+                    c6.2,52.1,22.3,99.7,46.9,137.3c28.1,42.9,63.4,66.4,99.5,66.4c7.9,0,15.8-1.1,23.5-3.4v48.2c-7.7,1.4-15.6,2.1-23.5,2.1
+                    c-52.4,0-101.7-31.1-138.8-87.7c-37.1-56.5-57.5-131.7-57.5-211.7C55.3,319.5,59.2,285.7,66.5,253.9L66.5,253.9z M285.8,79.4
+                    c0,19-15.3,34.2-34.3,34.2c-19,0-34.2-15.3-34.2-34.2c0-19.1,15.3-34.3,34.4-34.3C270.6,45.1,285.8,60.4,285.8,79.4L285.8,79.4z
+                    M422.1,206.9H275.1v349c-7.7,2.4-15.6,3.7-23.7,3.7c-8,0-15.8-1.2-23.3-3.6V206.9H81c6.3-16.6,13.6-32.3,22-47h297.2
+                    C408.5,174.6,415.9,190.3,422.1,206.9L422.1,206.9z M436.6,253.9c7.4,31.8,11.3,65.6,11.3,100.3c0,80-20.4,155.1-57.5,211.7
+                    c-19.7,30.1-42.9,53-68.2,67.8V253.9h47v253.5c20.6-44,31.7-97,31.7-153.2c0-35.1-4.4-69.1-12.6-100.3H436.6L436.6,253.9z"/>
+                </svg>
+                <div>
+                    <div class="etv-title">Hallenkapazität</div>
+                    <div class="etv-subtitle">Badminton</div>
+                </div>
+            </div>
+            <div class="etv-day-tag">Heute ist <strong>{today_weekday}</strong></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     spreadsheet_id = os.getenv("GOOGLE_SHEET_ID", "")
 
     if not spreadsheet_id:
@@ -274,20 +407,16 @@ def main() -> None:
         DATA_SHEET_NAME,
         headers=DATA_HEADERS,
     )
-
-    # --- Determine today ---
-    today = date.today()
-    today_iso = today.isoformat()
-    today_weekday = WEEKDAY_MAP[today.weekday()]
-
-    # --- Fetch existing entries ---
-    data_df = fetch_data(data_ws)
-
     # =====================================================================
     # STEP 1 – Training selection (landing page)
     # =====================================================================
     if st.session_state.selected_training is None:
-        st.markdown(f"Heute ist **{today_weekday}**")
+        # Fetch fresh data when entering overview (first visit or back from detail)
+        if st.session_state._data_stale or st.session_state._cached_data_df is None:
+            with st.spinner("Einträge werden geladen..."):
+                st.session_state._cached_data_df = fetch_data(spreadsheet_id)
+            st.session_state._data_stale = False
+        data_df = st.session_state._cached_data_df
 
         day_df = config_df[config_df["Wochentag"] == today_weekday]
 
@@ -314,13 +443,14 @@ def main() -> None:
                 st.subheader("📋 Noch offen")
                 for idx, row in open_trainings:
                     with st.container(border=True):
-                        col_time, col_name, col_hall = st.columns([2, 3, 3])
-                        col_time.markdown(f"🕐 **{row['Uhrzeit']}**")
+                        col_time, col_name, col_hall, col_btn = st.columns([2, 3, 3, 2])
+                        col_time.markdown(f"🕐 {row['Uhrzeit']}")
                         col_name.markdown(f"**{row['Trainingsart']}**")
                         col_hall.markdown(f"📍 {row['Halle']}")
-                        if st.button(
+                        if col_btn.button(
                             "Auswählen",
                             key=f"open_{idx}",
+                            type="primary",
                             use_container_width=True,
                         ):
                             st.session_state.selected_training = row.to_dict()
@@ -334,11 +464,11 @@ def main() -> None:
                     cap_value = existing["Kapazität"]
                     emoji_key = CAPACITY_LABEL_TO_KEY.get(cap_value, cap_value)
                     with st.container(border=True):
-                        col_time, col_name, col_hall = st.columns([2, 3, 3])
-                        col_time.markdown(f"🕐 **{row['Uhrzeit']}**")
+                        col_time, col_name, col_hall, col_btn = st.columns([2, 3, 3, 2])
+                        col_time.markdown(f"🕐 {row['Uhrzeit']}")
                         col_name.markdown(f"**{row['Trainingsart']}**")
                         col_hall.markdown(f"📍 {row['Halle']}")
-                        if st.button(
+                        if col_btn.button(
                             f"{emoji_key}",
                             key=f"done_{idx}",
                             use_container_width=True,
@@ -408,13 +538,14 @@ def main() -> None:
                 ):
                     for day_name, row in sorted(entries, key=lambda x: x[1]["Uhrzeit"]):
                         with st.container(border=True):
-                            col_time, col_name, col_hall = st.columns([2, 3, 3])
-                            col_time.markdown(f"🕐 **{row['Uhrzeit']}**")
+                            col_time, col_name, col_hall, col_btn = st.columns([2, 3, 3, 2])
+                            col_time.markdown(f"🕐 {row['Uhrzeit']}")
                             col_name.markdown(f"**{row['Trainingsart']}**")
                             col_hall.markdown(f"📍 {row['Halle']}")
-                            if st.button(
+                            if col_btn.button(
                                 "Nachtragen",
                                 key=f"missing_{d.isoformat()}_{row['Uhrzeit']}_{row['Halle']}",
+                                type="primary",
                                 use_container_width=True,
                             ):
                                 entry = row.to_dict()
@@ -430,7 +561,7 @@ def main() -> None:
             st.success("Alles erfasst! 🎉")
 
     # =====================================================================
-    # STEP 2 – Detail / Rating view
+    # STEP 2 – Detail / Rating view (NO fetching, local only)
     # =====================================================================
     else:
         t = st.session_state.selected_training
@@ -441,6 +572,7 @@ def main() -> None:
         if st.button("← Zurück zur Übersicht"):
             st.session_state.selected_training = None
             st.session_state.edit_mode = False
+            st.session_state._data_stale = True
             st.rerun()
 
         st.subheader(f"{t['Trainingsart']}")
@@ -449,29 +581,42 @@ def main() -> None:
             f"🕐 **{t['Uhrzeit']}**  ·  📍 {t['Halle']}  ·  {t['Wochentag']} ({date_label})"
         )
 
-        # Check if entry exists for this date
-        existing = find_existing_entry(
-            data_df, entry_date,
-            t["Wochentag"], t["Uhrzeit"],
-            t["Trainingsart"], t["Halle"],
-        )
-
         st.divider()
 
-        # ----- No entry yet → new submission -----
-        if existing is None:
-            st.markdown("**Wie voll ist es?**")
+        # Show the rating UI — always allow rating, check on submit
+        st.markdown("**Wie voll ist es?**")
 
-            capacity_choice = st.segmented_control(
-                "Auslastung",
-                options=list(CAPACITY_OPTIONS.keys()),
-                default=list(CAPACITY_OPTIONS.keys())[0],
-                label_visibility="collapsed",
-            )
+        capacity_choice = st.segmented_control(
+            "Auslastung",
+            options=list(CAPACITY_OPTIONS.keys()),
+            default=list(CAPACITY_OPTIONS.keys())[0],
+            label_visibility="collapsed",
+        )
 
-            if st.button("Absenden", type="primary", use_container_width=True, disabled=not capacity_choice):
-                capacity_label = CAPACITY_OPTIONS[capacity_choice]
-                try:
+        if st.button("Absenden", type="primary", use_container_width=True, disabled=not capacity_choice):
+            capacity_label = CAPACITY_OPTIONS[capacity_choice]
+            try:
+                # Fresh fetch at submit time to handle concurrent changes
+                fresh_df = fetch_data(spreadsheet_id)
+                existing = find_existing_entry(
+                    fresh_df, entry_date,
+                    t["Wochentag"], t["Uhrzeit"],
+                    t["Trainingsart"], t["Halle"],
+                )
+
+                if existing is not None:
+                    # Entry appeared meanwhile → update instead of append
+                    update_entry(
+                        data_ws, entry_date,
+                        t["Wochentag"], t["Uhrzeit"],
+                        t["Trainingsart"], t["Halle"],
+                        capacity_label,
+                    )
+                    st.success(
+                        f"✅ Aktualisiert: **{capacity_choice}** für "
+                        f"**{t['Trainingsart']}**"
+                    )
+                else:
                     submit_entry(
                         data_ws,
                         t["Wochentag"], t["Uhrzeit"],
@@ -483,61 +628,12 @@ def main() -> None:
                         f"✅ **{capacity_choice}** für **{t['Trainingsart']}** "
                         f"({t['Uhrzeit']}, {t['Halle']}) eingetragen!"
                     )
-                    st.session_state.selected_training = None
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Fehler beim Eintragen: {exc}")
 
-        # ----- Entry exists → read-only or edit mode -----
-        else:
-            cap_value = existing["Kapazität"]
-            emoji_key = CAPACITY_LABEL_TO_KEY.get(cap_value, cap_value)
-
-            if not st.session_state.edit_mode:
-                # Read-only view
-                st.markdown(f"Aktuelle Meldung: **{emoji_key}**")
-                if st.button("✏️ Bearbeiten", use_container_width=True):
-                    st.session_state.edit_mode = True
-                    st.rerun()
-            else:
-                # Edit mode
-                st.markdown("**Neue Auslastung wählen:**")
-
-                # Pre-select current value
-                options = list(CAPACITY_OPTIONS.keys())
-                default_val = emoji_key if emoji_key in options else options[0]
-
-                capacity_choice = st.segmented_control(
-                    "Auslastung",
-                    options=options,
-                    default=default_val,
-                    label_visibility="collapsed",
-                )
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Abbrechen", use_container_width=True):
-                        st.session_state.edit_mode = False
-                        st.rerun()
-                with col2:
-                    if st.button("Speichern", type="primary", use_container_width=True, disabled=not capacity_choice):
-                        capacity_label = CAPACITY_OPTIONS[capacity_choice]
-                        try:
-                            update_entry(
-                                data_ws, entry_date,
-                                t["Wochentag"], t["Uhrzeit"],
-                                t["Trainingsart"], t["Halle"],
-                                capacity_label,
-                            )
-                            st.success(
-                                f"✅ Aktualisiert: **{capacity_choice}** für "
-                                f"**{t['Trainingsart']}**"
-                            )
-                            st.session_state.edit_mode = False
-                            st.session_state.selected_training = None
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Fehler beim Aktualisieren: {exc}")
+                st.session_state.selected_training = None
+                st.session_state._data_stale = True
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Fehler beim Eintragen: {exc}")
 
 
 if __name__ == "__main__":

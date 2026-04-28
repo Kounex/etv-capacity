@@ -227,6 +227,10 @@ def confirm_override_dialog(existing_label, new_label, spreadsheet_id, entry_dat
             t["Trainingsart"], t["Halle"],
             new_label,
         )
+        new_label_with_emoji = CAPACITY_LABEL_TO_KEY.get(new_label, new_label)
+        st.session_state.pending_toast = {
+            "msg": f"**{new_label_with_emoji}** für **{t['Trainingsart']}** ({t['Uhrzeit']}, {t['Halle']}) eingetragen!",
+        }
         st.session_state.selected_training = None
         st.session_state._data_stale = True
         st.rerun()
@@ -267,12 +271,12 @@ def main() -> None:
         }
 
         /* Primary buttons – ETV red */
-        button[kind="primary"] {
+        button[kind="primary"]:not(:disabled) {
             background-color: #DC0D15 !important;
             border-color: #DC0D15 !important;
             color: white !important;
         }
-        button[kind="primary"]:hover {
+        button[kind="primary"]:not(:disabled):hover {
             background-color: #b00a11 !important;
             border-color: #b00a11 !important;
         }
@@ -380,6 +384,14 @@ def main() -> None:
         st.session_state._data_stale = True
     if "_cached_data_df" not in st.session_state:
         st.session_state._cached_data_df = None
+    if "is_submitting" not in st.session_state:
+        st.session_state.is_submitting = False
+    if "pending_toast" not in st.session_state:
+        st.session_state.pending_toast = None
+
+    if st.session_state.pending_toast:
+        st.toast(st.session_state.pending_toast["msg"])
+        st.session_state.pending_toast = None
 
     # --- Determine today (needed for header) ---
     today = date.today()
@@ -621,6 +633,19 @@ def main() -> None:
 
         st.divider()
 
+        with status_container:
+            # Check for intermediate updates using the freshly fetched cached dataframe
+            existing_info = None
+            if st.session_state.get("_cached_data_df") is not None:
+                existing_info = find_existing_entry(
+                    st.session_state._cached_data_df, entry_date,
+                    t["Wochentag"], t["Uhrzeit"],
+                    t["Trainingsart"], t["Halle"],
+                )
+
+            if existing_info is not None:
+                st.info(f"ℹ️ **Hinweis:** Jemand anderes hat in der Zwischenzeit bereits **{existing_info['Kapazität']}** eingetragen. Du kannst diesen Wert hier überschreiben.")
+
         # Show the rating UI — always allow rating, check on submit
         st.markdown("**Wie voll ist es?**")
 
@@ -629,24 +654,12 @@ def main() -> None:
             options=list(CAPACITY_OPTIONS.keys()),
             default=list(CAPACITY_OPTIONS.keys())[0],
             label_visibility="collapsed",
+            disabled=st.session_state.is_submitting,
         )
 
-        submit_btn = st.button("Absenden", type="primary", use_container_width=True, disabled=not capacity_choice)
-
-        with status_container:
-            # Check for intermediate updates using the freshly fetched cached dataframe
-            existing = None
-            if st.session_state.get("_cached_data_df") is not None:
-                existing = find_existing_entry(
-                    st.session_state._cached_data_df, entry_date,
-                    t["Wochentag"], t["Uhrzeit"],
-                    t["Trainingsart"], t["Halle"],
-                )
-
-            if existing is not None:
-                st.info(f"ℹ️ **Hinweis:** Jemand anderes hat in der Zwischenzeit bereits **{existing['Kapazität']}** eingetragen. Du kannst diesen Wert hier überschreiben.")
-
-        if submit_btn:
+        if st.session_state.is_submitting:
+            st.button("⏳ Wird verarbeitet...", type="primary", use_container_width=True, disabled=True)
+            
             capacity_label = CAPACITY_OPTIONS[capacity_choice]
             try:
                 # Fresh fetch at submit time to handle concurrent changes
@@ -659,6 +672,8 @@ def main() -> None:
                 )
 
                 if existing is not None:
+                    # Reset submitting state before showing dialog
+                    st.session_state.is_submitting = False
                     # Modal dialog handles the update
                     confirm_override_dialog(existing["Kapazität"], capacity_label, spreadsheet_id, entry_date, t)
                 else:
@@ -669,15 +684,20 @@ def main() -> None:
                         capacity_label,
                         date_iso=entry_date,
                     )
-                    st.success(
-                        f"✅ **{capacity_choice}** für **{t['Trainingsart']}** "
-                        f"({t['Uhrzeit']}, {t['Halle']}) eingetragen!"
-                    )
+                    st.session_state.pending_toast = {
+                        "msg": f"**{capacity_choice}** für **{t['Trainingsart']}** ({t['Uhrzeit']}, {t['Halle']}) eingetragen!",
+                    }
+                    st.session_state.is_submitting = False
                     st.session_state.selected_training = None
                     st.session_state._data_stale = True
                     st.rerun()
             except Exception as exc:
                 st.error(f"Fehler beim Eintragen: {exc}")
+                st.session_state.is_submitting = False
+        else:
+            if st.button("Absenden", type="primary", use_container_width=True, disabled=not capacity_choice):
+                st.session_state.is_submitting = True
+                st.rerun()
 
 
 

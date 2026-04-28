@@ -118,9 +118,7 @@ def fetch_data(spreadsheet_id: str) -> pd.DataFrame:
 
 
 
-@st.cache_data(ttl=10, show_spinner=False)
-def fetch_data_cached(spreadsheet_id: str):
-    return fetch_data(spreadsheet_id)
+
 
 def find_existing_entry(
     data_df: pd.DataFrame,
@@ -231,7 +229,6 @@ def confirm_override_dialog(existing_label, new_label, spreadsheet_id, entry_dat
         )
         st.session_state.selected_training = None
         st.session_state._data_stale = True
-        fetch_data_cached.clear()
         st.rerun()
 
 def main() -> None:
@@ -369,6 +366,11 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
+    def clear_selection():
+        st.session_state.selected_training = None
+        st.session_state.edit_mode = False
+        st.session_state._data_stale = True
+
     # --- Session state defaults ---
     if "selected_training" not in st.session_state:
         st.session_state.selected_training = None
@@ -412,6 +414,12 @@ def main() -> None:
 
     spreadsheet_id = os.getenv("GOOGLE_SHEET_ID", "")
 
+    def select_training(entry):
+        if spreadsheet_id:
+            st.session_state._cached_data_df = fetch_data(spreadsheet_id)
+        st.session_state.selected_training = entry
+        st.session_state.edit_mode = False
+
     if not spreadsheet_id:
         st.warning(
             "Bitte setze die Umgebungsvariable `GOOGLE_SHEET_ID` "
@@ -442,9 +450,10 @@ def main() -> None:
     # STEP 1 – Training selection (landing page)
     # =====================================================================
     if st.session_state.selected_training is None:
-        @st.fragment(run_every=10)
         def render_overview():
-            data_df = fetch_data_cached(spreadsheet_id)
+            data_df = fetch_data(spreadsheet_id)
+            # Store initially so we have it if needed
+            st.session_state._cached_data_df = data_df
 
             day_df = config_df[config_df["Wochentag"] == today_weekday]
 
@@ -477,15 +486,14 @@ def main() -> None:
                             col_time.markdown(f"🕐 {row['Uhrzeit']}")
                             col_name.markdown(f"**{row['Trainingsart']}**")
                             col_hall.markdown(f"📍 {row['Halle']}")
-                            if col_btn.button(
+                            col_btn.button(
                                 "Auswählen",
                                 key=f"open_{idx}",
                                 type="primary",
                                 use_container_width=True,
-                            ):
-                                st.session_state.selected_training = row.to_dict()
-                                st.session_state.edit_mode = False
-                                st.rerun()
+                                on_click=select_training,
+                                args=(row.to_dict(),)
+                            )
 
                 # --- Already submitted ---
                 if submitted_trainings:
@@ -498,14 +506,13 @@ def main() -> None:
                             col_time.markdown(f"🕐 {row['Uhrzeit']}")
                             col_name.markdown(f"**{row['Trainingsart']}**")
                             col_hall.markdown(f"<div style='display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;'><span>📍 {row['Halle']}</span><span class='etv-day-tag' style='padding: 0.1rem 0.4rem;'>{emoji_key}</span></div>", unsafe_allow_html=True)
-                            if col_btn.button(
+                            col_btn.button(
                                 "Auswählen",
                                 key=f"done_{idx}",
                                 use_container_width=True,
-                            ):
-                                st.session_state.selected_training = row.to_dict()
-                                st.session_state.edit_mode = False
-                                st.rerun()
+                                on_click=select_training,
+                                args=(row.to_dict(),)
+                            )
 
             # --- Missing entries from this & last week ---
             st.divider()
@@ -572,17 +579,16 @@ def main() -> None:
                                 col_time.markdown(f"🕐 {row['Uhrzeit']}")
                                 col_name.markdown(f"**{row['Trainingsart']}**")
                                 col_hall.markdown(f"📍 {row['Halle']}")
-                                if col_btn.button(
+                                entry = row.to_dict()
+                                entry["_override_date"] = d.isoformat()
+                                col_btn.button(
                                     "Nachtragen",
                                     key=f"missing_{d.isoformat()}_{row['Uhrzeit']}_{row['Halle']}",
                                     type="primary",
                                     use_container_width=True,
-                                ):
-                                    entry = row.to_dict()
-                                    entry["_override_date"] = d.isoformat()
-                                    st.session_state.selected_training = entry
-                                    st.session_state.edit_mode = False
-                                    st.rerun()
+                                    on_click=select_training,
+                                    args=(entry,)
+                                )
 
             if has_missing:
                 render_week_section("Diese Woche", this_week_dates)
@@ -593,20 +599,17 @@ def main() -> None:
 
 
         render_overview()
+
     # =====================================================================
-        # STEP 2 – Detail / Rating view (NO fetching, local only)
-        # =====================================================================
+    # STEP 2 – Detail / Rating view
+    # =====================================================================
     else:
         t = st.session_state.selected_training
 
         # Determine the date for this entry (today or override from missing list)
         entry_date = t.get("_override_date", today_iso)
 
-        if st.button("← Zurück zur Übersicht"):
-            st.session_state.selected_training = None
-            st.session_state.edit_mode = False
-            st.session_state._data_stale = True
-            st.rerun()
+        st.button("← Zurück zur Übersicht", on_click=clear_selection)
 
         st.subheader(f"{t['Trainingsart']}")
         date_label = entry_date if entry_date != today_iso else "Heute"
@@ -614,19 +617,7 @@ def main() -> None:
             f"🕐 **{t['Uhrzeit']}**  ·  📍 {t['Halle']}  ·  {t['Wochentag']} ({date_label})"
         )
 
-        @st.fragment(run_every=10)
-        def render_status_check():
-            # Check for intermediate updates with cached data
-            existing = find_existing_entry(
-                fetch_data_cached(spreadsheet_id), entry_date,
-                t["Wochentag"], t["Uhrzeit"],
-                t["Trainingsart"], t["Halle"],
-            )
-
-            if existing is not None:
-                st.info(f"ℹ️ **Hinweis:** Jemand anderes hat in der Zwischenzeit bereits **{existing['Kapazität']}** eingetragen. Du kannst diesen Wert hier überschreiben.")
-        
-        render_status_check()
+        status_container = st.empty()
 
         st.divider()
 
@@ -640,11 +631,27 @@ def main() -> None:
             label_visibility="collapsed",
         )
 
-        if st.button("Absenden", type="primary", use_container_width=True, disabled=not capacity_choice):
+        submit_btn = st.button("Absenden", type="primary", use_container_width=True, disabled=not capacity_choice)
+
+        with status_container:
+            # Check for intermediate updates using the freshly fetched cached dataframe
+            existing = None
+            if st.session_state.get("_cached_data_df") is not None:
+                existing = find_existing_entry(
+                    st.session_state._cached_data_df, entry_date,
+                    t["Wochentag"], t["Uhrzeit"],
+                    t["Trainingsart"], t["Halle"],
+                )
+
+            if existing is not None:
+                st.info(f"ℹ️ **Hinweis:** Jemand anderes hat in der Zwischenzeit bereits **{existing['Kapazität']}** eingetragen. Du kannst diesen Wert hier überschreiben.")
+
+        if submit_btn:
             capacity_label = CAPACITY_OPTIONS[capacity_choice]
             try:
                 # Fresh fetch at submit time to handle concurrent changes
                 fresh_df = fetch_data(spreadsheet_id)
+                st.session_state._cached_data_df = fresh_df
                 existing = find_existing_entry(
                     fresh_df, entry_date,
                     t["Wochentag"], t["Uhrzeit"],
@@ -668,7 +675,6 @@ def main() -> None:
                     )
                     st.session_state.selected_training = None
                     st.session_state._data_stale = True
-                    fetch_data_cached.clear()
                     st.rerun()
             except Exception as exc:
                 st.error(f"Fehler beim Eintragen: {exc}")

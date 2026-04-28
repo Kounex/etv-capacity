@@ -211,6 +211,29 @@ CAPACITY_LABEL_TO_KEY = {v: k for k, v in CAPACITY_OPTIONS.items()}
 # ---------------------------------------------------------------------------
 
 
+
+@st.dialog("Bestätigung: Eintrag überschreiben")
+def confirm_override_dialog(existing_label, new_label, spreadsheet_id, entry_date, t):
+    st.warning(f"Für diese Halle wurde bereits **{existing_label}** eingetragen.")
+    st.markdown(f"Möchtest du dies wirklich mit **{new_label}** überschreiben?")
+    
+    col1, col2 = st.columns(2)
+    if col1.button("Abbrechen", use_container_width=True):
+        st.rerun()
+    if col2.button("Überschreiben", type="primary", use_container_width=True):
+        client = get_gspread_client()
+        data_ws = get_or_create_worksheet(client, spreadsheet_id, DATA_SHEET_NAME, headers=DATA_HEADERS)
+        update_entry(
+            data_ws, entry_date,
+            t["Wochentag"], t["Uhrzeit"],
+            t["Trainingsart"], t["Halle"],
+            new_label,
+        )
+        st.session_state.selected_training = None
+        st.session_state._data_stale = True
+        fetch_data_cached.clear()
+        st.rerun()
+
 def main() -> None:
     st.set_page_config(
         page_title="ETV Hallenkapazität",
@@ -571,8 +594,8 @@ def main() -> None:
 
         render_overview()
     # =====================================================================
-    # STEP 2 – Detail / Rating view (NO fetching, local only)
-    # =====================================================================
+        # STEP 2 – Detail / Rating view (NO fetching, local only)
+        # =====================================================================
     else:
         t = st.session_state.selected_training
 
@@ -591,17 +614,19 @@ def main() -> None:
             f"🕐 **{t['Uhrzeit']}**  ·  📍 {t['Halle']}  ·  {t['Wochentag']} ({date_label})"
         )
 
-        # Check for intermediate updates with fresh data
-        with st.spinner("Prüfe aktuellen Status..."):
-            fresh_df = fetch_data(spreadsheet_id)
+        @st.fragment(run_every=10)
+        def render_status_check():
+            # Check for intermediate updates with cached data
             existing = find_existing_entry(
-                fresh_df, entry_date,
+                fetch_data_cached(spreadsheet_id), entry_date,
                 t["Wochentag"], t["Uhrzeit"],
                 t["Trainingsart"], t["Halle"],
             )
 
-        if existing is not None:
-            st.info(f"ℹ️ **Hinweis:** Jemand anderes hat in der Zwischenzeit bereits **{existing['Kapazität']}** eingetragen. Du kannst diesen Wert hier überschreiben.")
+            if existing is not None:
+                st.info(f"ℹ️ **Hinweis:** Jemand anderes hat in der Zwischenzeit bereits **{existing['Kapazität']}** eingetragen. Du kannst diesen Wert hier überschreiben.")
+        
+        render_status_check()
 
         st.divider()
 
@@ -627,17 +652,8 @@ def main() -> None:
                 )
 
                 if existing is not None:
-                    # Entry appeared meanwhile → update instead of append
-                    update_entry(
-                        data_ws, entry_date,
-                        t["Wochentag"], t["Uhrzeit"],
-                        t["Trainingsart"], t["Halle"],
-                        capacity_label,
-                    )
-                    st.success(
-                        f"✅ Aktualisiert: **{capacity_choice}** für "
-                        f"**{t['Trainingsart']}**"
-                    )
+                    # Modal dialog handles the update
+                    confirm_override_dialog(existing["Kapazität"], capacity_label, spreadsheet_id, entry_date, t)
                 else:
                     submit_entry(
                         data_ws,
@@ -650,15 +666,15 @@ def main() -> None:
                         f"✅ **{capacity_choice}** für **{t['Trainingsart']}** "
                         f"({t['Uhrzeit']}, {t['Halle']}) eingetragen!"
                     )
-
-                st.session_state.selected_training = None
-                st.session_state._data_stale = True
-                fetch_data_cached.clear()
-                st.rerun()
+                    st.session_state.selected_training = None
+                    st.session_state._data_stale = True
+                    fetch_data_cached.clear()
+                    st.rerun()
             except Exception as exc:
                 st.error(f"Fehler beim Eintragen: {exc}")
 
 
+
+
 if __name__ == "__main__":
     main()
-

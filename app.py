@@ -450,14 +450,6 @@ def main() -> None:
         )
         st.stop()
 
-    # --- Connect to data sheet ---
-    client = get_gspread_client()
-    data_ws = get_or_create_worksheet(
-        client,
-        spreadsheet_id,
-        DATA_SHEET_NAME,
-        headers=DATA_HEADERS,
-    )
     # =====================================================================
     # STEP 1 – Training selection (landing page)
     # =====================================================================
@@ -677,6 +669,8 @@ def main() -> None:
                     # Modal dialog handles the update
                     confirm_override_dialog(existing["Kapazität"], capacity_label, spreadsheet_id, entry_date, t)
                 else:
+                    client = get_gspread_client()
+                    data_ws = get_or_create_worksheet(client, spreadsheet_id, DATA_SHEET_NAME, headers=DATA_HEADERS)
                     submit_entry(
                         data_ws,
                         t["Wochentag"], t["Uhrzeit"],

@@ -117,6 +117,11 @@ def fetch_data(spreadsheet_id: str) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_data_cached(spreadsheet_id: str):
+    return fetch_data(spreadsheet_id)
+
 def find_existing_entry(
     data_df: pd.DataFrame,
     today_iso: str,
@@ -414,157 +419,157 @@ def main() -> None:
     # STEP 1 – Training selection (landing page)
     # =====================================================================
     if st.session_state.selected_training is None:
-        # Fetch fresh data when entering overview (first visit or back from detail)
-        if st.session_state._data_stale or st.session_state._cached_data_df is None:
-            with st.spinner("Einträge werden geladen..."):
-                st.session_state._cached_data_df = fetch_data(spreadsheet_id)
-            st.session_state._data_stale = False
-        data_df = st.session_state._cached_data_df
+        @st.fragment(run_every=10)
+        def render_overview():
+            data_df = fetch_data_cached(spreadsheet_id)
 
-        day_df = config_df[config_df["Wochentag"] == today_weekday]
+            day_df = config_df[config_df["Wochentag"] == today_weekday]
 
-        st.markdown("Ihr helft uns dabei, die Auslastung unserer Hallen zu bewerten. Gebt einfach an wie voll ihr die Halle empfindet, wenn ihr da seid.")
+            st.markdown("Ihr helft uns dabei, die Auslastung unserer Hallen zu bewerten. Gebt einfach an wie voll ihr die Halle empfindet, wenn ihr da seid.")
 
-        if day_df.empty:
-            st.info(f"Am {today_weekday} gibt es keine Trainings.")
-        else:
-            # Split trainings into open / already submitted
-            open_trainings = []
-            submitted_trainings = []
+            if day_df.empty:
+                st.info(f"Am {today_weekday} gibt es keine Trainings.")
+            else:
+                # Split trainings into open / already submitted
+                open_trainings = []
+                submitted_trainings = []
 
-            for idx, row in day_df.iterrows():
-                existing = find_existing_entry(
-                    data_df, today_iso,
-                    row["Wochentag"], row["Uhrzeit"],
-                    row["Trainingsart"], row["Halle"],
-                )
-                if existing is not None:
-                    submitted_trainings.append((idx, row, existing))
-                else:
-                    open_trainings.append((idx, row))
-
-            # --- Open trainings ---
-            if open_trainings:
-                st.subheader("📋 Noch offen")
-                for idx, row in open_trainings:
-                    with st.container(border=True):
-                        col_time, col_name, col_hall, col_btn = st.columns([2, 3, 3, 2])
-                        col_time.markdown(f"🕐 {row['Uhrzeit']}")
-                        col_name.markdown(f"**{row['Trainingsart']}**")
-                        col_hall.markdown(f"📍 {row['Halle']}")
-                        if col_btn.button(
-                            "Auswählen",
-                            key=f"open_{idx}",
-                            type="primary",
-                            use_container_width=True,
-                        ):
-                            st.session_state.selected_training = row.to_dict()
-                            st.session_state.edit_mode = False
-                            st.rerun()
-
-            # --- Already submitted ---
-            if submitted_trainings:
-                st.subheader("✅ Bereits erfasst")
-                for idx, row, existing in submitted_trainings:
-                    cap_value = existing["Kapazität"]
-                    emoji_key = CAPACITY_LABEL_TO_KEY.get(cap_value, cap_value)
-                    with st.container(border=True):
-                        col_time, col_name, col_hall, col_btn = st.columns([2, 3, 3, 2])
-                        col_time.markdown(f"🕐 {row['Uhrzeit']}")
-                        col_name.markdown(f"**{row['Trainingsart']}**")
-                        col_hall.markdown(f"📍 {row['Halle']}")
-                        if col_btn.button(
-                            f"{emoji_key}",
-                            key=f"done_{idx}",
-                            use_container_width=True,
-                        ):
-                            st.session_state.selected_training = row.to_dict()
-                            st.session_state.edit_mode = False
-                            st.rerun()
-
-        # --- Missing entries from this & last week ---
-        st.divider()
-        st.subheader("⚠️ Fehlende Einträge")
-
-        # Build list of all past training days in this + last week
-        monday_this_week = today - timedelta(days=today.weekday())
-        monday_last_week = monday_this_week - timedelta(days=7)
-        friday_last_week = monday_last_week + timedelta(days=4)
-
-        # Collect missing entries grouped by date
-        # { date_obj: [(day_name, row), ...] }
-        missing_by_date: dict[date, list[tuple[str, pd.Series]]] = defaultdict(list)
-
-        check_date = monday_last_week
-        while check_date <= today:
-            # Skip weekends and today (today is handled above)
-            if check_date.weekday() < 5 and check_date != today:
-                day_name = WEEKDAY_MAP[check_date.weekday()]
-                day_iso = check_date.isoformat()
-                day_trainings = config_df[config_df["Wochentag"] == day_name]
-
-                for _, row in day_trainings.iterrows():
+                for idx, row in day_df.iterrows():
                     existing = find_existing_entry(
-                        data_df, day_iso,
+                        data_df, today_iso,
                         row["Wochentag"], row["Uhrzeit"],
                         row["Trainingsart"], row["Halle"],
                     )
-                    if existing is None:
-                        missing_by_date[check_date].append((day_name, row))
+                    if existing is not None:
+                        submitted_trainings.append((idx, row, existing))
+                    else:
+                        open_trainings.append((idx, row))
 
-            check_date += timedelta(days=1)
-
-        # Split into this week / last week
-        this_week_dates = {
-            d: entries for d, entries in missing_by_date.items()
-            if d >= monday_this_week
-        }
-        last_week_dates = {
-            d: entries for d, entries in missing_by_date.items()
-            if d < monday_this_week
-        }
-
-        has_missing = bool(this_week_dates or last_week_dates)
-
-        def render_week_section(
-            label: str,
-            dates: dict[date, list[tuple[str, pd.Series]]],
-        ) -> None:
-            if not dates:
-                return
-            st.markdown(f"**{label}**")
-            for d in sorted(dates.keys(), reverse=True):
-                entries = dates[d]
-                day_name = WEEKDAY_MAP[d.weekday()]
-                formatted = d.strftime("%d.%m.")
-                with st.expander(
-                    f"{day_name}, {formatted} — {len(entries)} offen",
-                    expanded=False,
-                ):
-                    for day_name, row in sorted(entries, key=lambda x: x[1]["Uhrzeit"]):
+                # --- Open trainings ---
+                if open_trainings:
+                    st.subheader("📋 Noch offen")
+                    for idx, row in open_trainings:
                         with st.container(border=True):
                             col_time, col_name, col_hall, col_btn = st.columns([2, 3, 3, 2])
                             col_time.markdown(f"🕐 {row['Uhrzeit']}")
                             col_name.markdown(f"**{row['Trainingsart']}**")
                             col_hall.markdown(f"📍 {row['Halle']}")
                             if col_btn.button(
-                                "Nachtragen",
-                                key=f"missing_{d.isoformat()}_{row['Uhrzeit']}_{row['Halle']}",
+                                "Auswählen",
+                                key=f"open_{idx}",
                                 type="primary",
                                 use_container_width=True,
                             ):
-                                entry = row.to_dict()
-                                entry["_override_date"] = d.isoformat()
-                                st.session_state.selected_training = entry
+                                st.session_state.selected_training = row.to_dict()
                                 st.session_state.edit_mode = False
                                 st.rerun()
 
-        if has_missing:
-            render_week_section("Diese Woche", this_week_dates)
-            render_week_section("Letzte Woche", last_week_dates)
-        else:
-            st.success("Alles erfasst! 🎉")
+                # --- Already submitted ---
+                if submitted_trainings:
+                    st.subheader("✅ Bereits erfasst")
+                    for idx, row, existing in submitted_trainings:
+                        cap_value = existing["Kapazität"]
+                        emoji_key = CAPACITY_LABEL_TO_KEY.get(cap_value, cap_value)
+                        with st.container(border=True):
+                            col_time, col_name, col_hall, col_btn = st.columns([2, 3, 3, 2])
+                            col_time.markdown(f"🕐 {row['Uhrzeit']}")
+                            col_name.markdown(f"**{row['Trainingsart']}**")
+                            col_hall.markdown(f"<div style='display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem;'><span>📍 {row['Halle']}</span><span class='etv-day-tag' style='padding: 0.1rem 0.4rem;'>{emoji_key}</span></div>", unsafe_allow_html=True)
+                            if col_btn.button(
+                                "Auswählen",
+                                key=f"done_{idx}",
+                                use_container_width=True,
+                            ):
+                                st.session_state.selected_training = row.to_dict()
+                                st.session_state.edit_mode = False
+                                st.rerun()
 
+            # --- Missing entries from this & last week ---
+            st.divider()
+            st.subheader("⚠️ Fehlende Einträge")
+
+            # Build list of all past training days in this + last week
+            monday_this_week = today - timedelta(days=today.weekday())
+            monday_last_week = monday_this_week - timedelta(days=7)
+            friday_last_week = monday_last_week + timedelta(days=4)
+
+            # Collect missing entries grouped by date
+            # { date_obj: [(day_name, row), ...] }
+            missing_by_date: dict[date, list[tuple[str, pd.Series]]] = defaultdict(list)
+
+            check_date = monday_last_week
+            while check_date <= today:
+                # Skip weekends and today (today is handled above)
+                if check_date.weekday() < 5 and check_date != today:
+                    day_name = WEEKDAY_MAP[check_date.weekday()]
+                    day_iso = check_date.isoformat()
+                    day_trainings = config_df[config_df["Wochentag"] == day_name]
+
+                    for _, row in day_trainings.iterrows():
+                        existing = find_existing_entry(
+                            data_df, day_iso,
+                            row["Wochentag"], row["Uhrzeit"],
+                            row["Trainingsart"], row["Halle"],
+                        )
+                        if existing is None:
+                            missing_by_date[check_date].append((day_name, row))
+
+                check_date += timedelta(days=1)
+
+            # Split into this week / last week
+            this_week_dates = {
+                d: entries for d, entries in missing_by_date.items()
+                if d >= monday_this_week
+            }
+            last_week_dates = {
+                d: entries for d, entries in missing_by_date.items()
+                if d < monday_this_week
+            }
+
+            has_missing = bool(this_week_dates or last_week_dates)
+
+            def render_week_section(
+                label: str,
+                dates: dict[date, list[tuple[str, pd.Series]]],
+            ) -> None:
+                if not dates:
+                    return
+                st.markdown(f"**{label}**")
+                for d in sorted(dates.keys(), reverse=True):
+                    entries = dates[d]
+                    day_name = WEEKDAY_MAP[d.weekday()]
+                    formatted = d.strftime("%d.%m.")
+                    with st.expander(
+                        f"{day_name}, {formatted} — {len(entries)} offen",
+                        expanded=False,
+                    ):
+                        for day_name, row in sorted(entries, key=lambda x: x[1]["Uhrzeit"]):
+                            with st.container(border=True):
+                                col_time, col_name, col_hall, col_btn = st.columns([2, 3, 3, 2])
+                                col_time.markdown(f"🕐 {row['Uhrzeit']}")
+                                col_name.markdown(f"**{row['Trainingsart']}**")
+                                col_hall.markdown(f"📍 {row['Halle']}")
+                                if col_btn.button(
+                                    "Nachtragen",
+                                    key=f"missing_{d.isoformat()}_{row['Uhrzeit']}_{row['Halle']}",
+                                    type="primary",
+                                    use_container_width=True,
+                                ):
+                                    entry = row.to_dict()
+                                    entry["_override_date"] = d.isoformat()
+                                    st.session_state.selected_training = entry
+                                    st.session_state.edit_mode = False
+                                    st.rerun()
+
+            if has_missing:
+                render_week_section("Diese Woche", this_week_dates)
+                render_week_section("Letzte Woche", last_week_dates)
+            else:
+                st.success("Alles erfasst! 🎉")
+
+
+
+        render_overview()
     # =====================================================================
     # STEP 2 – Detail / Rating view (NO fetching, local only)
     # =====================================================================
@@ -585,6 +590,18 @@ def main() -> None:
         st.markdown(
             f"🕐 **{t['Uhrzeit']}**  ·  📍 {t['Halle']}  ·  {t['Wochentag']} ({date_label})"
         )
+
+        # Check for intermediate updates with fresh data
+        with st.spinner("Prüfe aktuellen Status..."):
+            fresh_df = fetch_data(spreadsheet_id)
+            existing = find_existing_entry(
+                fresh_df, entry_date,
+                t["Wochentag"], t["Uhrzeit"],
+                t["Trainingsart"], t["Halle"],
+            )
+
+        if existing is not None:
+            st.info(f"ℹ️ **Hinweis:** Jemand anderes hat in der Zwischenzeit bereits **{existing['Kapazität']}** eingetragen. Du kannst diesen Wert hier überschreiben.")
 
         st.divider()
 
@@ -636,6 +653,7 @@ def main() -> None:
 
                 st.session_state.selected_training = None
                 st.session_state._data_stale = True
+                fetch_data_cached.clear()
                 st.rerun()
             except Exception as exc:
                 st.error(f"Fehler beim Eintragen: {exc}")

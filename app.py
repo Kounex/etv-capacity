@@ -263,16 +263,19 @@ def main() -> None:
             margin-top: 0.5rem;
             margin-bottom: 1rem;
         }
-        [data-baseweb="button-group"][role="radiogroup"] {
+         [data-baseweb="button-group"][role="radiogroup"] {
             width: 100% !important;
             max-width: none !important;
             display: flex !important;
             flex-wrap: nowrap !important;
+            flex-direction: column;
+            gap: 12px;
         }
-        [data-baseweb="button-group"] > button {
-            flex: 1 1 0% !important;
-            min-width: 0 !important;
-        }
+
+        [data-baseweb="button-group"][role="radiogroup"] > button {
+            border-radius: 0.5rem !important;
+            border: 1px solid rgba(26, 26, 26, 0.2) !important;
+        } 
 
         /* Card containers */
         div[data-testid="stVerticalBlock"] > div[data-testid="stExpander"] {
@@ -419,6 +422,8 @@ def main() -> None:
         data_df = st.session_state._cached_data_df
 
         day_df = config_df[config_df["Wochentag"] == today_weekday]
+
+        st.markdown("Ihr helft uns dabei, die Auslastung unserer Hallen zu bewerten. Gebt einfach an wie voll ihr die Halle empfindet, wenn ihr da seid.")
 
         if day_df.empty:
             st.info(f"Am {today_weekday} gibt es keine Trainings.")

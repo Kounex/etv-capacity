@@ -23,7 +23,7 @@ jobs:
 
       - name: Read version
         id: version
-        run: echo "version=$(grep -m 1 '^version = ' pyproject.toml | cut -d '\"' -f 2)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(grep -m 1 '^version = ' pyproject.toml | cut -d '"' -f 2)" >> "$GITHUB_OUTPUT"
 
       - name: Lowercase image name
         id: image

@@ -6,6 +6,10 @@ Streamlit app to track how many players are currently in each badminton training
 
 1. **Google Cloud service account** with the Google Sheets API enabled.
 2. **Google Sheet** shared with the service account's email address (editor access).
+   The sheet must contain the following tabs:
+   - `Stammdaten`: The master schedule (Wochentag, Uhrzeit, Trainingsart, Halle, Max. Kapazität)
+   - `Kürzel`: Location abbreviations (Halle, Abkürzung)
+   - `Kapazität`: The data sheet where records are saved (can be auto-created by the app)
 
 ## Quick Start
 
@@ -26,6 +30,7 @@ open http://localhost:8501
 |---|---|---|
 | `GOOGLE_SHEET_ID` | ✅ | The ID from your Google Sheet URL |
 | `GOOGLE_SHEET_NAME` | ❌ | Worksheet tab name (default: `Kapazität`) |
+| `ENABLE_STATISTICS_TAB` | ❌ | Set to `true` to show the statistics & history tab |
 | `GOOGLE_CREDENTIALS_FILE` | ✅* | Path to service-account JSON |
 | `GOOGLE_CREDENTIALS_JSON` | ✅* | Service-account JSON as string |
 

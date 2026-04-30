@@ -1,0 +1,18 @@
+[project]
+name = "etv-hallenkapazitaet"
+version = "0.1.0"
+description = "Streamlit app to track badminton hall capacity for the ETV sports club"
+requires-python = ">=3.12"
+dependencies = [
+    "streamlit>=1.37,<2",
+    "gspread>=6.0,<7",
+    "google-auth>=2.0,<3",
+    "pandas>=2.0,<3",
+    "python-dotenv>=1.0,<2",
+]
+
+[tool.basedpyright]
+venvPath = "."
+venv = "venv"
+typeCheckingMode = "basic"
+reportArgumentType = false

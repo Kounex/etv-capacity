@@ -439,6 +439,45 @@ def main() -> None:
 
         /* Hide sidebar */
         [data-testid="stSidebar"] { display: none; }
+
+        /* Transform st.pills to look exactly like st.tabs (isolated using :has) */
+        div[data-baseweb="button-group"]:has(button[data-testid^="stBaseButton-pills"]) {
+            border-bottom: 1px solid rgba(49, 51, 63, 0.2) !important;
+            gap: 1.5rem !important;
+            padding-bottom: 0 !important;
+            margin-bottom: 1rem !important;
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: flex-end !important;
+            width: 100% !important;
+        }
+        
+        div[data-baseweb="button-group"] button[data-testid^="stBaseButton-pills"] {
+            background-color: transparent !important;
+            background: transparent !important;
+            border: none !important;
+            border-radius: 0 !important;
+            color: rgba(49, 51, 63, 0.6) !important;
+            font-size: 1rem !important;
+            padding: 0.5rem 0.25rem !important;
+            box-shadow: none !important;
+            opacity: 1 !important;
+            flex: 0 1 auto !important; /* Prevent them from stretching fully like capacity buttons */
+        }
+
+        div[data-baseweb="button-group"] button[data-testid^="stBaseButton-pills"]:hover {
+            color: #DC0D15 !important;
+            background-color: transparent !important;
+            background: transparent !important;
+        }
+
+        div[data-baseweb="button-group"] button[data-testid="stBaseButton-pillsActive"] {
+            color: #DC0D15 !important;
+            border-bottom: 2px solid #DC0D15 !important;
+            font-weight: 600 !important;
+            background-color: transparent !important;
+            background: transparent !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -932,14 +971,21 @@ def main() -> None:
                             st.altair_chart(trend, use_container_width=True)
 
         if ENABLE_STATISTICS_TAB:
-            tab1, tab2 = st.tabs(["Heute Eintragen", "Statistiken & Historie"])
-            with tab1:
-                render_overview()
-            with tab2:
+            active_tab = st.pills(
+                "Navigation",
+                options=["Heute Eintragen", "Statistiken & Historie"],
+                default="Heute Eintragen",
+                selection_mode="single",
+                label_visibility="collapsed",
+            )
+            
+            if active_tab == "Statistiken & Historie":
                 # Reuse cached data; only fetch if not yet loaded
                 if st.session_state._cached_data_df is None:
                     st.session_state._cached_data_df = fetch_data(spreadsheet_id)
                 render_statistics(st.session_state._cached_data_df, config_df, short_names)
+            else:
+                render_overview()
         else:
             render_overview()
 

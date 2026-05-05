@@ -46,7 +46,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 # 3. Install dependencies
-pip install -r requirements.txt
+pip install .
 
 # 4. Set up your environment variables
 cp .env.example .env

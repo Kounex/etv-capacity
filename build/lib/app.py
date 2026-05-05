@@ -37,9 +37,6 @@ DATA_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Kapazität")
 # Feature Flags
 ENABLE_STATISTICS_TAB = os.getenv("ENABLE_STATISTICS_TAB", "false").lower() == "true"
 
-# Localization
-APP_LOCALE = os.getenv("APP_LOCALE", "de_DE")
-
 
 # Traffic-light capacity options
 CAPACITY_OPTIONS = {
@@ -225,6 +222,17 @@ def update_entry(
         [today_iso, weekday, time_slot, training_type, hall, capacity_label]
     )
 
+
+# Map Python weekday() (0=Mon) to German names
+WEEKDAY_MAP = {
+    0: "Montag",
+    1: "Dienstag",
+    2: "Mittwoch",
+    3: "Donnerstag",
+    4: "Freitag",
+    5: "Samstag",
+    6: "Sonntag",
+}
 # Reverse lookup: capacity label → emoji key
 CAPACITY_LABEL_TO_KEY = {v: k for k, v in CAPACITY_OPTIONS.items()}
 
@@ -464,7 +472,7 @@ def main() -> None:
     # --- Determine today (needed for header) ---
     today = date.today()
     today_iso = today.isoformat()
-    today_weekday = babel.dates.format_date(today, "EEEE", locale=APP_LOCALE)
+    today_weekday = WEEKDAY_MAP[today.weekday()]
 
     # --- ETV Logo + Title + Day Tag ---
     st.markdown(
@@ -486,7 +494,7 @@ def main() -> None:
                     <div class="etv-subtitle">Badminton</div>
                 </div>
             </div>
-            <div class="etv-day-tag">Heute ist <strong>{today_weekday}</strong>, der {babel.dates.format_date(today, "d. MMMM", locale=APP_LOCALE)}</div>
+            <div class="etv-day-tag">Heute ist <strong>{today_weekday}</strong>, der {babel.dates.format_date(today, "d. MMMM", locale="de_DE")}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -613,7 +621,7 @@ def main() -> None:
             while check_date <= today:
                 # Skip weekends and today (today is handled above)
                 if check_date.weekday() < 5 and check_date != today:
-                    day_name = babel.dates.format_date(check_date, "EEEE", locale=APP_LOCALE)
+                    day_name = WEEKDAY_MAP[check_date.weekday()]
                     day_iso = check_date.isoformat()
                     day_trainings = config_df[config_df["Wochentag"] == day_name]
 
@@ -654,7 +662,7 @@ def main() -> None:
                 st.markdown(f"**{label}**")
                 for d in sorted(dates.keys(), reverse=True):
                     entries = dates[d]
-                    day_name = babel.dates.format_date(d, "EEEE", locale=APP_LOCALE)
+                    day_name = WEEKDAY_MAP[d.weekday()]
                     formatted = d.strftime("%d.%m.")
                     with st.expander(
                         f"{day_name}, {formatted} — {len(entries)} offen",

@@ -31,6 +31,8 @@ open http://localhost:8501
 | `GOOGLE_SHEET_ID` | ✅ | The ID from your Google Sheet URL |
 | `GOOGLE_SHEET_NAME` | ❌ | Worksheet tab name (default: `Kapazität`) |
 | `ENABLE_STATISTICS_TAB` | ❌ | Set to `true` to show the statistics & history tab |
+| `APP_LOCALE` | ❌ | Babel locale for date formatting (default: `de_DE`) |
+| `APP_VERSION` | ❌ | Docker image tag used in `docker-compose.yml` (default: `2.2.0`) |
 | `GOOGLE_CREDENTIALS_FILE` | ✅* | Path to service-account JSON |
 | `GOOGLE_CREDENTIALS_JSON` | ✅* | Service-account JSON as string |
 

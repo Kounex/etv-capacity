@@ -4,6 +4,14 @@ ETV Hallenkapazität - Streamlit Application
 This application allows users to track and report the capacity of badminton halls
 for the ETV sports club. It uses Google Sheets as a database backend to store
 configuration (Stammdaten) and live capacity data.
+
+Key architectural decisions:
+- All three sheets (Stammdaten, Kürzel, Kapazität) are fetched in a single
+  batch call via ``fetch_all_sheets`` to minimise API round-trips.
+- Sheet data is cached in ``st.session_state`` so that UI interactions
+  (tab switches, button clicks) operate from memory without re-fetching.
+- Date formatting uses the Babel library with a configurable ``APP_LOCALE``
+  constant (default: de_DE) for easy multi-language support.
 """
 
 import json
@@ -114,47 +122,63 @@ def get_or_create_worksheet(
         return ws
 
 
-@st.cache_data(ttl=300, show_spinner="Trainingsdaten werden geladen...")
-def fetch_config(spreadsheet_id: str) -> pd.DataFrame:
-    """Read the Stammdaten (base config) sheet."""
-    client = get_gspread_client()
-    ws = get_or_create_worksheet(
-        client,
-        spreadsheet_id,
-        CONFIG_SHEET_NAME,
-        headers=CONFIG_HEADERS,
-    )
-    records = ws.get_all_records()
-    if not records:
-        return pd.DataFrame(columns=CONFIG_HEADERS)
-    return pd.DataFrame(records)
+def fetch_all_sheets(
+    spreadsheet_id: str,
+) -> tuple[pd.DataFrame, dict[str, str], pd.DataFrame]:
+    """Fetch config, short-names and live capacity data in one spreadsheet session.
 
+    Opens the spreadsheet once and reads all three tabs, cutting the number
+    of HTTP round-trips from 3+ down to 1 authenticated session.
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_short_names(spreadsheet_id: str) -> dict[str, str]:
-    """Read the Kürzel sheet and return a mapping of Halle to Abkürzung."""
+    Returns:
+        (config_df, short_names, data_df)
+    """
     client = get_gspread_client()
+    spreadsheet = client.open_by_key(spreadsheet_id)
+
+    # --- Stammdaten (config) ---
     try:
-        ws = client.open_by_key(spreadsheet_id).worksheet("Kürzel")
-        records = ws.get_all_records()
-        return {r["Halle"]: r["Abkürzung"] for r in records if "Halle" in r and "Abkürzung" in r}
-    except Exception:
-        return {}
-
-
-def fetch_data(spreadsheet_id: str) -> pd.DataFrame:
-    """Read the capacity data sheet into a DataFrame."""
-    client = get_gspread_client()
-    ws = get_or_create_worksheet(
-        client,
-        spreadsheet_id,
-        DATA_SHEET_NAME,
-        headers=DATA_HEADERS,
+        config_ws = spreadsheet.worksheet(CONFIG_SHEET_NAME)
+    except gspread.exceptions.WorksheetNotFound:
+        config_ws = spreadsheet.add_worksheet(
+            title=CONFIG_SHEET_NAME, rows=1000, cols=10,
+        )
+        config_ws.append_row(CONFIG_HEADERS)
+    config_records = config_ws.get_all_records()
+    config_df = (
+        pd.DataFrame(config_records)
+        if config_records
+        else pd.DataFrame(columns=CONFIG_HEADERS)
     )
-    records = ws.get_all_records()
-    if not records:
-        return pd.DataFrame(columns=DATA_HEADERS)
-    return pd.DataFrame(records)
+
+    # --- Kürzel (short names) ---
+    try:
+        kurzel_ws = spreadsheet.worksheet("Kürzel")
+        kurzel_records = kurzel_ws.get_all_records()
+        short_names = {
+            r["Halle"]: r["Abkürzung"]
+            for r in kurzel_records
+            if "Halle" in r and "Abkürzung" in r
+        }
+    except Exception:
+        short_names = {}
+
+    # --- Kapazität (live data) ---
+    try:
+        data_ws = spreadsheet.worksheet(DATA_SHEET_NAME)
+    except gspread.exceptions.WorksheetNotFound:
+        data_ws = spreadsheet.add_worksheet(
+            title=DATA_SHEET_NAME, rows=1000, cols=10,
+        )
+        data_ws.append_row(DATA_HEADERS)
+    data_records = data_ws.get_all_records()
+    data_df = (
+        pd.DataFrame(data_records)
+        if data_records
+        else pd.DataFrame(columns=DATA_HEADERS)
+    )
+
+    return config_df, short_names, data_df
 
 
 def find_existing_entry(
@@ -259,9 +283,9 @@ def confirm_override_dialog(
     st.markdown(f"Möchtest du dies wirklich mit **{new_label}** überschreiben?")
 
     col1, col2 = st.columns(2)
-    if col1.button("Abbrechen", use_container_width=True):
+    if col1.button("Abbrechen", width="stretch"):
         st.rerun()
-    if col2.button("Überschreiben", type="primary", use_container_width=True):
+    if col2.button("Überschreiben", type="primary", width="stretch"):
         client = get_gspread_client()
         data_ws = get_or_create_worksheet(
             client, spreadsheet_id, DATA_SHEET_NAME, headers=DATA_HEADERS
@@ -439,45 +463,6 @@ def main() -> None:
 
         /* Hide sidebar */
         [data-testid="stSidebar"] { display: none; }
-
-        /* Transform st.pills to look exactly like st.tabs (isolated using :has) */
-        div[data-baseweb="button-group"]:has(button[data-testid^="stBaseButton-pills"]) {
-            border-bottom: 1px solid rgba(49, 51, 63, 0.2) !important;
-            gap: 1.5rem !important;
-            padding-bottom: 0 !important;
-            margin-bottom: 1rem !important;
-            display: flex !important;
-            flex-direction: row !important;
-            align-items: flex-end !important;
-            width: 100% !important;
-        }
-        
-        div[data-baseweb="button-group"] button[data-testid^="stBaseButton-pills"] {
-            background-color: transparent !important;
-            background: transparent !important;
-            border: none !important;
-            border-radius: 0 !important;
-            color: rgba(49, 51, 63, 0.6) !important;
-            font-size: 1rem !important;
-            padding: 0.5rem 0.25rem !important;
-            box-shadow: none !important;
-            opacity: 1 !important;
-            flex: 0 1 auto !important; /* Prevent them from stretching fully like capacity buttons */
-        }
-
-        div[data-baseweb="button-group"] button[data-testid^="stBaseButton-pills"]:hover {
-            color: #DC0D15 !important;
-            background-color: transparent !important;
-            background: transparent !important;
-        }
-
-        div[data-baseweb="button-group"] button[data-testid="stBaseButton-pillsActive"] {
-            color: #DC0D15 !important;
-            border-bottom: 2px solid #DC0D15 !important;
-            font-weight: 600 !important;
-            background-color: transparent !important;
-            background: transparent !important;
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -489,6 +474,10 @@ def main() -> None:
     # --- Session state defaults ---
     if "selected_training" not in st.session_state:
         st.session_state.selected_training = None
+    if "_cached_config_df" not in st.session_state:
+        st.session_state._cached_config_df = None
+    if "_cached_short_names" not in st.session_state:
+        st.session_state._cached_short_names = None
     if "_cached_data_df" not in st.session_state:
         st.session_state._cached_data_df = None
     if "is_submitting" not in st.session_state:
@@ -543,9 +532,16 @@ def main() -> None:
         )
         st.stop()
 
-    # --- Load base config from Stammdaten ---
-    config_df = fetch_config(spreadsheet_id)
-    short_names = fetch_short_names(spreadsheet_id)
+    # --- Load all necessary data in a single batch (only on first run) ---
+    if st.session_state._cached_data_df is None:
+        with st.spinner("Trainingsdaten werden geladen..."):
+            config_df, short_names, data_df = fetch_all_sheets(spreadsheet_id)
+            st.session_state._cached_config_df = config_df
+            st.session_state._cached_short_names = short_names
+            st.session_state._cached_data_df = data_df
+
+    config_df = st.session_state._cached_config_df
+    short_names = st.session_state._cached_short_names
 
     if config_df.empty:
         st.warning(
@@ -561,8 +557,6 @@ def main() -> None:
     if st.session_state.selected_training is None:
 
         def render_overview():
-            if st.session_state._cached_data_df is None:
-                st.session_state._cached_data_df = fetch_data(spreadsheet_id)
             data_df = st.session_state._cached_data_df
 
             day_df = config_df[config_df["Wochentag"] == today_weekday]
@@ -607,7 +601,7 @@ def main() -> None:
                                 "Auswählen",
                                 key=f"open_{idx}",
                                 type="primary",
-                                use_container_width=True,
+                                width="stretch",
                                 on_click=select_training,
                                 args=(row.to_dict(),),
                             )
@@ -631,7 +625,7 @@ def main() -> None:
                             col_btn.button(
                                 "Auswählen",
                                 key=f"done_{idx}",
-                                use_container_width=True,
+                                width="stretch",
                                 on_click=select_training,
                                 args=(row.to_dict(),),
                             )
@@ -715,7 +709,7 @@ def main() -> None:
                                     "Nachtragen",
                                     key=f"missing_{d.isoformat()}_{row['Uhrzeit']}_{row['Halle']}",
                                     type="primary",
-                                    use_container_width=True,
+                                    width="stretch",
                                     on_click=select_training,
                                     args=(entry,),
                                 )
@@ -886,7 +880,7 @@ def main() -> None:
                 spacing=5
             )
 
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
             st.divider()
             st.subheader("Auslastung pro Trainingseinheit")
@@ -968,24 +962,14 @@ def main() -> None:
                                 padding={"top": 10, "bottom": 5, "left": 5, "right": 5},
                             )
                             
-                            st.altair_chart(trend, use_container_width=True)
+                            st.altair_chart(trend, width="stretch")
 
         if ENABLE_STATISTICS_TAB:
-            active_tab = st.pills(
-                "Navigation",
-                options=["Heute Eintragen", "Statistiken & Historie"],
-                default="Heute Eintragen",
-                selection_mode="single",
-                label_visibility="collapsed",
-            )
-            
-            if active_tab == "Statistiken & Historie":
-                # Reuse cached data; only fetch if not yet loaded
-                if st.session_state._cached_data_df is None:
-                    st.session_state._cached_data_df = fetch_data(spreadsheet_id)
-                render_statistics(st.session_state._cached_data_df, config_df, short_names)
-            else:
+            tab1, tab2 = st.tabs(["Heute Eintragen", "Statistiken & Historie"])
+            with tab1:
                 render_overview()
+            with tab2:
+                render_statistics(st.session_state._cached_data_df, config_df, short_names)
         else:
             render_overview()
 
@@ -1043,14 +1027,14 @@ def main() -> None:
             st.button(
                 "⏳ Wird verarbeitet...",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=True,
             )
 
             capacity_label = CAPACITY_OPTIONS[capacity_choice]
             try:
                 # Fresh fetch at submit time to handle concurrent changes
-                fresh_df = fetch_data(spreadsheet_id)
+                _, _, fresh_df = fetch_all_sheets(spreadsheet_id)
                 st.session_state._cached_data_df = fresh_df
                 existing = find_existing_entry(
                     fresh_df,
@@ -1100,7 +1084,7 @@ def main() -> None:
             if st.button(
                 "Absenden",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not capacity_choice,
             ):
                 st.session_state.is_submitting = True

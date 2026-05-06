@@ -6,10 +6,15 @@ for the ETV sports club. It uses Google Sheets as a database backend to store
 configuration (Stammdaten) and live capacity data.
 
 Key architectural decisions:
-- All three sheets (Stammdaten, Kürzel, Kapazität) are fetched in a single
-  batch call via ``fetch_all_sheets`` to minimise API round-trips.
+- Stammdaten, Kürzel, and a range-limited tail of Kapazität are all fetched
+  in a single spreadsheet open via ``fetch_all_initial`` on page load.
+- Kapazität data is fetched with a range-limited read via ``fetch_recent_capacity``,
+  sized to cover 2 weeks of possible submissions based on the Stammdaten count.
+- Full Kapazität history is lazy-loaded only when the statistics tab is accessed
+  via ``fetch_full_capacity``.
 - Sheet data is cached in ``st.session_state`` so that UI interactions
   (tab switches, button clicks) operate from memory without re-fetching.
+- The Datum column is pre-converted to ISO strings at load time for fast lookups.
 - Date formatting uses the Babel library with a configurable ``APP_LOCALE``
   constant (default: de_DE) for easy multi-language support.
 """
@@ -20,6 +25,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 import gspread
+from gspread.exceptions import APIError
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -47,6 +53,25 @@ ENABLE_STATISTICS_TAB = os.getenv("ENABLE_STATISTICS_TAB", "false").lower() == "
 
 # Localization
 APP_LOCALE = os.getenv("APP_LOCALE", "de_DE")
+
+
+# ---------------------------------------------------------------------------
+# Google API error handling
+# ---------------------------------------------------------------------------
+
+def is_quota_error(exc: Exception) -> bool:
+    """Check whether an exception is a Google API quota / rate-limit error."""
+    if isinstance(exc, APIError):
+        response = getattr(exc, "response", None)
+        if response is not None and getattr(response, "status_code", None) == 429:
+            return True
+        msg = str(exc).lower()
+        if "429" in msg or "quota" in msg or "rate limit" in msg or "too many requests" in msg:
+            return True
+    msg = str(exc).lower()
+    if "429" in msg or "quota" in msg or "rate limit" in msg or "too many requests" in msg:
+        return True
+    return False
 
 
 # Traffic-light capacity options
@@ -122,16 +147,21 @@ def get_or_create_worksheet(
         return ws
 
 
-def fetch_all_sheets(
+def _records_from_values(values: list[list[str]]) -> list[dict[str, str]]:
+    """Convert a ``get_values`` result (including header row) to record dicts."""
+    if len(values) <= 1:
+        return []
+    headers = values[0]
+    return [dict(zip(headers, row)) for row in values[1:]]
+
+
+def fetch_all_initial(
     spreadsheet_id: str,
 ) -> tuple[pd.DataFrame, dict[str, str], pd.DataFrame]:
-    """Fetch config, short-names and live capacity data in one spreadsheet session.
+    """Open the spreadsheet **once** and read all 3 tabs for initial page load.
 
-    Opens the spreadsheet once and reads all three tabs, cutting the number
-    of HTTP round-trips from 3+ down to 1 authenticated session.
-
-    Returns:
-        (config_df, short_names, data_df)
+    Kapazität is read with a range-limited tail based on the Stammdaten count.
+    Makes exactly 4 API calls (same as the old ``fetch_all_sheets``).
     """
     client = get_gspread_client()
     spreadsheet = client.open_by_key(spreadsheet_id)
@@ -163,22 +193,94 @@ def fetch_all_sheets(
     except Exception:
         short_names = {}
 
-    # --- Kapazität (live data) ---
+    # --- Kapazität (range-limited) ---
+    data_ws = spreadsheet.worksheet(DATA_SHEET_NAME)
+    all_values = data_ws.get_all_values()
+    total_rows = len(all_values)
+
+    if total_rows <= 1:
+        data_df = pd.DataFrame(columns=DATA_HEADERS)
+    else:
+        entries_per_week = len(config_df) if not config_df.empty else 20
+        rows_needed = max(100, entries_per_week * 2 * 2)
+
+        if total_rows - 1 <= rows_needed:
+            data_records = _records_from_values(all_values)
+        else:
+            start_row = total_rows - rows_needed
+            tail_values = data_ws.get_values(f"A{start_row}:G{total_rows}")
+            data_records = _records_from_values(tail_values)
+
+        data_df = pd.DataFrame(data_records) if data_records else pd.DataFrame(columns=DATA_HEADERS)
+
+    return config_df, short_names, _parse_date_column(data_df)
+
+
+def fetch_recent_capacity(
+    spreadsheet_id: str,
+    config_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Fetch Kapazität rows for the current overview.
+
+    Row count is based on Stammdaten: covers 2 weeks of submissions
+    with a 2x buffer for duplicates/overrides (minimum 100 rows).
+    """
+    data_ws = _get_data_worksheet(spreadsheet_id)
+    all_values = data_ws.get_all_values()
+    total_rows = len(all_values)
+
+    if total_rows <= 1:
+        return pd.DataFrame(columns=DATA_HEADERS)
+
+    entries_per_week = len(config_df) if not config_df.empty else 20
+    rows_needed = max(100, entries_per_week * 2 * 2)
+
+    if total_rows - 1 <= rows_needed:
+        data_records = _records_from_values(all_values)
+    else:
+        start_row = total_rows - rows_needed
+        tail_values = data_ws.get_values(f"A{start_row}:G{total_rows}")
+        data_records = _records_from_values(tail_values)
+
+    data_df = pd.DataFrame(data_records) if data_records else pd.DataFrame(columns=DATA_HEADERS)
+    return _parse_date_column(data_df)
+
+
+def _parse_date_column(df: pd.DataFrame, column: str = "Datum") -> pd.DataFrame:
+    """Pre-convert a date column to ISO-format strings for fast comparison."""
+    if df.empty or column not in df.columns:
+        return df
     try:
-        data_ws = spreadsheet.worksheet(DATA_SHEET_NAME)
+        df[column] = pd.to_datetime(df[column], format="mixed").dt.strftime("%Y-%m-%d")
+    except Exception:
+        df[column] = df[column].astype(str)
+    return df
+
+
+def _get_data_worksheet(spreadsheet_id: str) -> gspread.Worksheet:
+    """Return the Kapazität worksheet, creating it if it does not exist."""
+    client = get_gspread_client()
+    spreadsheet = client.open_by_key(spreadsheet_id)
+    try:
+        return spreadsheet.worksheet(DATA_SHEET_NAME)
     except gspread.exceptions.WorksheetNotFound:
         data_ws = spreadsheet.add_worksheet(
             title=DATA_SHEET_NAME, rows=1000, cols=10,
         )
         data_ws.append_row(DATA_HEADERS)
+        return data_ws
+
+
+def fetch_full_capacity(spreadsheet_id: str) -> pd.DataFrame:
+    """Fetch complete Kapazität history for the statistics tab."""
+    data_ws = _get_data_worksheet(spreadsheet_id)
     data_records = data_ws.get_all_records()
     data_df = (
         pd.DataFrame(data_records)
         if data_records
         else pd.DataFrame(columns=DATA_HEADERS)
     )
-
-    return config_df, short_names, data_df
+    return _parse_date_column(data_df)
 
 
 def find_existing_entry(
@@ -189,9 +291,13 @@ def find_existing_entry(
     training_type: str,
     hall: str,
 ) -> pd.Series | None:
-    """Return the row for today's entry matching the training slot, or None."""
+    """Return the row for today's entry matching the training slot, or None.
+
+    The Datum column is expected to be pre-converted to ISO strings
+    (handled by ``_parse_date_column`` during data load).
+    """
     mask = (
-        (data_df["Datum"].astype(str) == today_iso)
+        (data_df["Datum"] == today_iso)
         & (data_df["Wochentag"] == weekday)
         & (data_df["Uhrzeit"] == time_slot)
         & (data_df["Trainingsart"] == training_type)
@@ -200,7 +306,7 @@ def find_existing_entry(
     matches = data_df[mask]
     if matches.empty:
         return None
-    return matches.iloc[-1]  # latest entry if duplicates
+    return matches.iloc[-1]
 
 
 def submit_entry(
@@ -228,11 +334,28 @@ def update_entry(
     hall: str,
     capacity_label: str,
 ) -> None:
-    """Find and update an existing row matching the training slot for today."""
-    all_values = worksheet.get_all_values()
-    # Search from bottom to top to find the latest matching row
-    for row_idx in range(len(all_values) - 1, 0, -1):
-        row = all_values[row_idx]
+    """Find and update an existing row matching the training slot for today.
+
+    Only scans the last 500 rows since conflict entries are always recent.
+    """
+    column_a = worksheet.get_values("A:A")
+    actual_row_count = len(column_a)
+
+    if actual_row_count <= 1:
+        worksheet.append_row(
+            [today_iso, weekday, time_slot, training_type, hall, capacity_label]
+        )
+        return
+
+    scan_size = min(500, actual_row_count)
+    start_row = actual_row_count - scan_size + 1
+    if start_row < 2:
+        start_row = 2
+
+    values = worksheet.get_values(f"A{start_row}:G{actual_row_count}")
+
+    for offset in range(len(values) - 1, -1, -1):
+        row = values[offset]
         if (
             len(row) >= 6
             and row[0] == today_iso
@@ -241,10 +364,9 @@ def update_entry(
             and row[3] == training_type
             and row[4] == hall
         ):
-            # row_idx is 0-based, worksheet rows are 1-based
-            worksheet.update_cell(row_idx + 1, 6, capacity_label)
+            worksheet.update_cell(start_row + offset, 6, capacity_label)
             return
-    # Fallback: append if not found (shouldn't happen)
+
     worksheet.append_row(
         [today_iso, weekday, time_slot, training_type, hall, capacity_label]
     )
@@ -286,26 +408,52 @@ def confirm_override_dialog(
     if col1.button("Abbrechen", width="stretch"):
         st.rerun()
     if col2.button("Überschreiben", type="primary", width="stretch"):
-        client = get_gspread_client()
-        data_ws = get_or_create_worksheet(
-            client, spreadsheet_id, DATA_SHEET_NAME, headers=DATA_HEADERS
-        )
-        update_entry(
-            data_ws,
-            entry_date,
-            t["Wochentag"],
-            t["Uhrzeit"],
-            t["Trainingsart"],
-            t["Halle"],
-            new_label,
-        )
-        new_label_with_emoji = CAPACITY_LABEL_TO_KEY.get(new_label, new_label)
-        st.session_state.pending_toast = {
-            "msg": f"**{new_label_with_emoji}** für **{t['Trainingsart']}** ({t['Uhrzeit']}, {t['Halle']}) eingetragen!",
-        }
-        st.session_state._cached_data_df = None
-        st.session_state.selected_training = None
-        st.rerun()
+        try:
+            client = get_gspread_client()
+            data_ws = get_or_create_worksheet(
+                client, spreadsheet_id, DATA_SHEET_NAME, headers=DATA_HEADERS
+            )
+            update_entry(
+                data_ws,
+                entry_date,
+                t["Wochentag"],
+                t["Uhrzeit"],
+                t["Trainingsart"],
+                t["Halle"],
+                new_label,
+            )
+            new_label_with_emoji = CAPACITY_LABEL_TO_KEY.get(new_label, new_label)
+            st.session_state.pending_toast = {
+                "msg": f"**{new_label_with_emoji}** für **{t['Trainingsart']}** ({t['Uhrzeit']}, {t['Halle']}) eingetragen!",
+            }
+            # Update the matching row in the cache in-place so the overview
+            # is immediately consistent without a reload spinner.
+            data_df = st.session_state._cached_data_df
+            if data_df is not None and not data_df.empty:
+                mask = (
+                    (data_df["Datum"] == entry_date)
+                    & (data_df["Wochentag"] == t["Wochentag"])
+                    & (data_df["Uhrzeit"] == t["Uhrzeit"])
+                    & (data_df["Trainingsart"] == t["Trainingsart"])
+                    & (data_df["Halle"] == t["Halle"])
+                )
+                matching = data_df[mask]
+                if not matching.empty:
+                    data_df.loc[matching.index[-1], "Kapazität"] = new_label
+                    st.session_state._cached_data_df = data_df
+                else:
+                    st.session_state._cached_data_df = None  # fallback: force reload
+            st.session_state._cached_full_data_df = None
+            st.session_state.selected_training = None
+            st.rerun()
+        except Exception as exc:
+            if is_quota_error(exc):
+                st.error(
+                    "**Google API-Limit erreicht** — Überschreiben nicht möglich.\n\n"
+                    "Bitte warte ein paar Sekunden und versuche es erneut."
+                )
+            else:
+                st.error(f"Fehler beim Überschreiben: {exc}")
 
 
 def main() -> None:
@@ -480,10 +628,14 @@ def main() -> None:
         st.session_state._cached_short_names = None
     if "_cached_data_df" not in st.session_state:
         st.session_state._cached_data_df = None
+    if "_cached_full_data_df" not in st.session_state:
+        st.session_state._cached_full_data_df = None
     if "is_submitting" not in st.session_state:
         st.session_state.is_submitting = False
     if "pending_toast" not in st.session_state:
         st.session_state.pending_toast = None
+    if "api_error" not in st.session_state:
+        st.session_state.api_error = None
 
     if st.session_state.pending_toast:
         st.toast(st.session_state.pending_toast["msg"])
@@ -532,16 +684,38 @@ def main() -> None:
         )
         st.stop()
 
-    # --- Load all necessary data in a single batch (only on first run) ---
+    # --- Load all data in one spreadsheet open (initial load only) ---
     if st.session_state._cached_data_df is None:
         with st.spinner("Trainingsdaten werden geladen..."):
-            config_df, short_names, data_df = fetch_all_sheets(spreadsheet_id)
-            st.session_state._cached_config_df = config_df
-            st.session_state._cached_short_names = short_names
-            st.session_state._cached_data_df = data_df
+            try:
+                config_df, short_names, data_df = fetch_all_initial(spreadsheet_id)
+                st.session_state._cached_config_df = config_df
+                st.session_state._cached_short_names = short_names
+                st.session_state._cached_data_df = data_df
+                st.session_state.api_error = None
+            except Exception as exc:
+                if is_quota_error(exc):
+                    st.session_state.api_error = (
+                        "**Google API-Limit erreicht** — Die Trainingsdaten konnten nicht geladen werden.\n\n"
+                        f"Bitte warte ein paar Sekunden und lade die Seite neu. "
+                        "Das Limit wird von Google pro Minute gezählt."
+                    )
+                else:
+                    st.session_state.api_error = (
+                        f"**Verbindungsfehler** — Die Trainingsdaten konnten nicht geladen werden.\n\n"
+                        f"Details: {exc}"
+                    )
 
     config_df = st.session_state._cached_config_df
     short_names = st.session_state._cached_short_names
+
+    if st.session_state.api_error:
+        st.error(st.session_state.api_error)
+        if st.button("Erneut versuchen", type="primary", width="stretch"):
+            st.session_state.api_error = None
+            st.session_state._cached_data_df = None
+            st.rerun()
+        st.stop()
 
     if config_df.empty:
         st.warning(
@@ -969,7 +1143,21 @@ def main() -> None:
             with tab1:
                 render_overview()
             with tab2:
-                render_statistics(st.session_state._cached_data_df, config_df, short_names)
+                if st.session_state._cached_full_data_df is None:
+                    try:
+                        with st.spinner("Historie wird geladen..."):
+                            st.session_state._cached_full_data_df = fetch_full_capacity(spreadsheet_id)
+                    except Exception as exc:
+                        if is_quota_error(exc):
+                            st.error(
+                                "**Google API-Limit erreicht** — Die Historie konnte nicht geladen werden.\n\n"
+                                "Bitte warte ein paar Sekunden und versuche es erneut."
+                            )
+                        else:
+                            st.error(f"Fehler beim Laden der Historie: {exc}")
+                        # Leave _cached_full_data_df as None so the next tab open retries
+                if st.session_state._cached_full_data_df is not None:
+                    render_statistics(st.session_state._cached_full_data_df, config_df, short_names)
         else:
             render_overview()
 
@@ -1034,7 +1222,8 @@ def main() -> None:
             capacity_label = CAPACITY_OPTIONS[capacity_choice]
             try:
                 # Fresh fetch at submit time to handle concurrent changes
-                _, _, fresh_df = fetch_all_sheets(spreadsheet_id)
+                # (only recent data, not full history)
+                fresh_df = fetch_recent_capacity(spreadsheet_id, config_df)
                 st.session_state._cached_data_df = fresh_df
                 existing = find_existing_entry(
                     fresh_df,
@@ -1070,16 +1259,34 @@ def main() -> None:
                         capacity_label,
                         date_iso=entry_date,
                     )
+                    # Append the new row directly into the cached DataFrame so
+                    # the overview reloads instantly without a spinner.
+                    new_row = pd.DataFrame([{
+                        "Datum": entry_date,
+                        "Wochentag": t["Wochentag"],
+                        "Uhrzeit": t["Uhrzeit"],
+                        "Trainingsart": t["Trainingsart"],
+                        "Halle": t["Halle"],
+                        "Kapazität": capacity_label,
+                    }])
+                    st.session_state._cached_data_df = pd.concat(
+                        [fresh_df, new_row], ignore_index=True
+                    )
                     st.session_state.pending_toast = {
                         "msg": f"**{capacity_choice}** für **{t['Trainingsart']}** ({t['Uhrzeit']}, {t['Halle']}) eingetragen!",
                     }
-                    st.session_state._cached_data_df = None
                     st.session_state.is_submitting = False
                     st.session_state.selected_training = None
                     st.rerun()
             except Exception as exc:
-                st.error(f"Fehler beim Eintragen: {exc}")
                 st.session_state.is_submitting = False
+                if is_quota_error(exc):
+                    st.error(
+                        "**Google API-Limit erreicht** — Der Eintrag konnte nicht gespeichert werden.\n\n"
+                        "Bitte warte ein paar Sekunden und versuche es erneut."
+                    )
+                else:
+                    st.error(f"**Fehler beim Eintragen** — {exc}")
         else:
             if st.button(
                 "Absenden",

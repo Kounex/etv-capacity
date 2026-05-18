@@ -1,6 +1,6 @@
 services:
   etv-capacity:
-    image: ghcr.io/kounex/etv-capacity:${APP_VERSION:-2.1.0}
+    image: ghcr.io/kounex/etv-capacity:${APP_VERSION:-2.4.0}
     container_name: etv-capacity
     restart: unless-stopped
     ports:

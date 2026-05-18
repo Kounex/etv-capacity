@@ -9,9 +9,18 @@ Key architectural decisions:
 - Stammdaten, Kürzel, and a range-limited tail of Kapazität are all fetched
   in a single spreadsheet open via ``fetch_all_initial`` on page load.
 - Kapazität data is fetched with a range-limited read via ``fetch_recent_capacity``,
-  sized to cover 2 weeks of possible submissions based on the Stammdaten count.
+  sized to cover 2 weeks of possible submissions (with a 4× re-submission buffer)
+  based on the Stammdaten count. This is also used at submit time to detect
+  concurrent writes and trigger the override-confirmation dialog.
 - Full Kapazität history is lazy-loaded only when the statistics tab is accessed
   via ``fetch_full_capacity``.
+- The Kapazität sheet is **append-only**: every confirmed submission (including
+  "overrides") appends a new row. The latest row per (Datum, slot) is the current
+  value. Consumers use ``find_existing_entry`` (``iloc[-1]``) for the overview and
+  ``drop_duplicates(keep="last")`` for statistics.
+- Each row now carries an ``Eingetragen am`` column with the wall-clock submission
+  timestamp (ISO 8601 local, ``YYYY-MM-DDTHH:MM:SS``), distinct from ``Datum``
+  which is the training date the entry refers to.
 - Sheet data is cached in ``st.session_state`` so that UI interactions
   (tab switches, button clicks) operate from memory without re-fetching.
 - The Datum column is pre-converted to ISO strings at load time for fast lookups.
@@ -22,7 +31,7 @@ Key architectural decisions:
 import json
 import os
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import gspread
 from gspread.exceptions import APIError
@@ -96,6 +105,7 @@ DATA_HEADERS = [
     "Trainingsart",
     "Halle",
     "Kapazität",
+    "Eingetragen am",
 ]
 
 # ---------------------------------------------------------------------------
@@ -202,13 +212,13 @@ def fetch_all_initial(
         data_df = pd.DataFrame(columns=DATA_HEADERS)
     else:
         entries_per_week = len(config_df) if not config_df.empty else 20
-        rows_needed = max(100, entries_per_week * 2 * 2)
+        rows_needed = max(150, entries_per_week * 2 * 4)
 
         if total_rows - 1 <= rows_needed:
             data_records = _records_from_values(all_values)
         else:
             start_row = total_rows - rows_needed
-            tail_values = data_ws.get_values(f"A{start_row}:G{total_rows}")
+            tail_values = data_ws.get_values(f"A{start_row}:H{total_rows}")
             data_records = _records_from_values(tail_values)
 
         data_df = pd.DataFrame(data_records) if data_records else pd.DataFrame(columns=DATA_HEADERS)
@@ -233,13 +243,13 @@ def fetch_recent_capacity(
         return pd.DataFrame(columns=DATA_HEADERS)
 
     entries_per_week = len(config_df) if not config_df.empty else 20
-    rows_needed = max(100, entries_per_week * 2 * 2)
+    rows_needed = max(150, entries_per_week * 2 * 4)
 
     if total_rows - 1 <= rows_needed:
         data_records = _records_from_values(all_values)
     else:
         start_row = total_rows - rows_needed
-        tail_values = data_ws.get_values(f"A{start_row}:G{total_rows}")
+        tail_values = data_ws.get_values(f"A{start_row}:H{total_rows}")
         data_records = _records_from_values(tail_values)
 
     data_df = pd.DataFrame(data_records) if data_records else pd.DataFrame(columns=DATA_HEADERS)
@@ -317,59 +327,20 @@ def submit_entry(
     hall: str,
     capacity_label: str,
     date_iso: str | None = None,
-) -> None:
-    """Append a new capacity entry: Datum, Wochentag, Uhrzeit, Trainingsart, Halle, Kapazität."""
-    entry_date = date_iso or date.today().isoformat()
-    worksheet.append_row(
-        [entry_date, weekday, time_slot, training_type, hall, capacity_label]
-    )
+    submitted_at: str | None = None,
+) -> str:
+    """Append a new capacity entry and return the submission timestamp used.
 
-
-def update_entry(
-    worksheet: gspread.Worksheet,
-    today_iso: str,
-    weekday: str,
-    time_slot: str,
-    training_type: str,
-    hall: str,
-    capacity_label: str,
-) -> None:
-    """Find and update an existing row matching the training slot for today.
-
-    Only scans the last 500 rows since conflict entries are always recent.
+    Returns the ``submitted_at`` ISO string so callers can mirror it in the
+    local cache without recomputing a different timestamp.
     """
-    column_a = worksheet.get_values("A:A")
-    actual_row_count = len(column_a)
-
-    if actual_row_count <= 1:
-        worksheet.append_row(
-            [today_iso, weekday, time_slot, training_type, hall, capacity_label]
-        )
-        return
-
-    scan_size = min(500, actual_row_count)
-    start_row = actual_row_count - scan_size + 1
-    if start_row < 2:
-        start_row = 2
-
-    values = worksheet.get_values(f"A{start_row}:G{actual_row_count}")
-
-    for offset in range(len(values) - 1, -1, -1):
-        row = values[offset]
-        if (
-            len(row) >= 6
-            and row[0] == today_iso
-            and row[1] == weekday
-            and row[2] == time_slot
-            and row[3] == training_type
-            and row[4] == hall
-        ):
-            worksheet.update_cell(start_row + offset, 6, capacity_label)
-            return
-
+    entry_date = date_iso or date.today().isoformat()
+    ts = submitted_at or datetime.now().replace(microsecond=0).isoformat()
     worksheet.append_row(
-        [today_iso, weekday, time_slot, training_type, hall, capacity_label]
+        [entry_date, weekday, time_slot, training_type, hall, capacity_label, ts]
     )
+    return ts
+
 
 # Reverse lookup: capacity label → emoji key
 CAPACITY_LABEL_TO_KEY = {v: k for k, v in CAPACITY_OPTIONS.items()}
@@ -413,36 +384,38 @@ def confirm_override_dialog(
             data_ws = get_or_create_worksheet(
                 client, spreadsheet_id, DATA_SHEET_NAME, headers=DATA_HEADERS
             )
-            update_entry(
+            submitted_at = submit_entry(
                 data_ws,
-                entry_date,
                 t["Wochentag"],
                 t["Uhrzeit"],
                 t["Trainingsart"],
                 t["Halle"],
                 new_label,
+                date_iso=entry_date,
             )
             new_label_with_emoji = CAPACITY_LABEL_TO_KEY.get(new_label, new_label)
             st.session_state.pending_toast = {
                 "msg": f"**{new_label_with_emoji}** für **{t['Trainingsart']}** ({t['Uhrzeit']}, {t['Halle']}) eingetragen!",
             }
-            # Update the matching row in the cache in-place so the overview
-            # is immediately consistent without a reload spinner.
+            # Append the new row into the cache so the overview reflects the
+            # latest value instantly. find_existing_entry uses iloc[-1], so
+            # appending here is enough — no in-place mutation needed.
             data_df = st.session_state._cached_data_df
-            if data_df is not None and not data_df.empty:
-                mask = (
-                    (data_df["Datum"] == entry_date)
-                    & (data_df["Wochentag"] == t["Wochentag"])
-                    & (data_df["Uhrzeit"] == t["Uhrzeit"])
-                    & (data_df["Trainingsart"] == t["Trainingsart"])
-                    & (data_df["Halle"] == t["Halle"])
+            if data_df is not None:
+                new_row = pd.DataFrame([{
+                    "Datum": entry_date,
+                    "Wochentag": t["Wochentag"],
+                    "Uhrzeit": t["Uhrzeit"],
+                    "Trainingsart": t["Trainingsart"],
+                    "Halle": t["Halle"],
+                    "Kapazität": new_label,
+                    "Eingetragen am": submitted_at,
+                }])
+                st.session_state._cached_data_df = pd.concat(
+                    [data_df, new_row], ignore_index=True
                 )
-                matching = data_df[mask]
-                if not matching.empty:
-                    data_df.loc[matching.index[-1], "Kapazität"] = new_label
-                    st.session_state._cached_data_df = data_df
-                else:
-                    st.session_state._cached_data_df = None  # fallback: force reload
+            else:
+                st.session_state._cached_data_df = None  # fallback: force reload
             st.session_state._cached_full_data_df = None
             st.session_state.selected_training = None
             st.rerun()
@@ -904,6 +877,18 @@ def main() -> None:
             # Map labels to numbers
             df = data_df.copy()
             if not df.empty:
+                # Deduplicate to the latest submission per (date, slot).
+                # Sort by Eingetragen am first so the last row per group is
+                # truly the most recent. Fill missing timestamps (historical rows
+                # without the column) with "" so they sort before any real value
+                # and are never falsely treated as "latest".
+                if "Eingetragen am" in df.columns:
+                    df["Eingetragen am"] = df["Eingetragen am"].fillna("").astype(str)
+                    df = df.sort_values("Eingetragen am", kind="stable")
+                df = df.drop_duplicates(
+                    subset=["Datum", "Wochentag", "Uhrzeit", "Trainingsart", "Halle"],
+                    keep="last",
+                )
                 df["Num"] = df["Kapazität"].map(CAPACITY_TO_NUM)
             else:
                 df["Num"] = pd.Series(dtype=float)
@@ -1250,7 +1235,7 @@ def main() -> None:
                     data_ws = get_or_create_worksheet(
                         client, spreadsheet_id, DATA_SHEET_NAME, headers=DATA_HEADERS
                     )
-                    submit_entry(
+                    submitted_at = submit_entry(
                         data_ws,
                         t["Wochentag"],
                         t["Uhrzeit"],
@@ -1268,6 +1253,7 @@ def main() -> None:
                         "Trainingsart": t["Trainingsart"],
                         "Halle": t["Halle"],
                         "Kapazität": capacity_label,
+                        "Eingetragen am": submitted_at,
                     }])
                     st.session_state._cached_data_df = pd.concat(
                         [fresh_df, new_row], ignore_index=True

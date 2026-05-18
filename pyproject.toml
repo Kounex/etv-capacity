@@ -1,6 +1,6 @@
 [project]
 name = "etv-hallenkapazitaet"
-version = "3.0.0"
+version = "3.1.0"
 description = "Streamlit app to track badminton hall capacity for the ETV sports club"
 requires-python = ">=3.12"
 dependencies = [

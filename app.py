@@ -157,12 +157,21 @@ def get_or_create_worksheet(
         return ws
 
 
-def _records_from_values(values: list[list[str]]) -> list[dict[str, str]]:
-    """Convert a ``get_values`` result (including header row) to record dicts."""
+def _records_from_values(
+    values: list[list[str]],
+    headers: list[str] | None = None,
+) -> list[dict[str, str]]:
+    """Convert a ``get_values`` result (including header row) to record dicts.
+
+    ``values[0]`` is always treated as the sheet header row and skipped.
+    If ``headers`` is provided it is used as column names instead of
+    ``values[0]``, making the function immune to wrong or duplicate header
+    values in the sheet (e.g. a mis-typed column G1).
+    """
     if len(values) <= 1:
         return []
-    headers = values[0]
-    return [dict(zip(headers, row)) for row in values[1:]]
+    col_names = headers if headers is not None else values[0]
+    return [dict(zip(col_names, row)) for row in values[1:]]
 
 
 def fetch_all_initial(
@@ -215,11 +224,20 @@ def fetch_all_initial(
         rows_needed = max(150, entries_per_week * 2 * 4)
 
         if total_rows - 1 <= rows_needed:
-            data_records = _records_from_values(all_values)
+            data_records = _records_from_values(all_values, headers=DATA_HEADERS)
         else:
+            # start_row is a 1-based sheet row number (matching gspread range
+            # notation). Because we are in the else branch we know
+            # total_rows - 1 > rows_needed, so start_row >= 2 — the sheet
+            # header row (row 1) is never included in tail_values.
             start_row = total_rows - rows_needed
             tail_values = data_ws.get_values(f"A{start_row}:H{total_rows}")
-            data_records = _records_from_values(tail_values)
+            # _records_from_values always skips values[0] as the header row.
+            # tail_values starts at a data row, so prepend all_values[0] (the
+            # real sheet header) purely as the discard target — no data is lost.
+            data_records = _records_from_values(
+                [all_values[0]] + tail_values, headers=DATA_HEADERS
+            )
 
         data_df = pd.DataFrame(data_records) if data_records else pd.DataFrame(columns=DATA_HEADERS)
 
@@ -246,11 +264,20 @@ def fetch_recent_capacity(
     rows_needed = max(150, entries_per_week * 2 * 4)
 
     if total_rows - 1 <= rows_needed:
-        data_records = _records_from_values(all_values)
+        data_records = _records_from_values(all_values, headers=DATA_HEADERS)
     else:
+        # start_row is a 1-based sheet row number (matching gspread range
+        # notation). Because we are in the else branch we know
+        # total_rows - 1 > rows_needed, so start_row >= 2 — the sheet
+        # header row (row 1) is never included in tail_values.
         start_row = total_rows - rows_needed
         tail_values = data_ws.get_values(f"A{start_row}:H{total_rows}")
-        data_records = _records_from_values(tail_values)
+        # _records_from_values always skips values[0] as the header row.
+        # tail_values starts at a data row, so prepend all_values[0] (the
+        # real sheet header) purely as the discard target — no data is lost.
+        data_records = _records_from_values(
+            [all_values[0]] + tail_values, headers=DATA_HEADERS
+        )
 
     data_df = pd.DataFrame(data_records) if data_records else pd.DataFrame(columns=DATA_HEADERS)
     return _parse_date_column(data_df)

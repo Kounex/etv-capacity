@@ -22,6 +22,11 @@ updates:
       patches:
         update-types: ["patch"]
         patterns: ["*"]
+    ignore:
+      # Majors of these are a planned migration (pandas 2 -> 3), not a refresh;
+      # see Kounex/it-env templates/container-image/README.md, "Planned migrations".
+      - dependency-name: "pandas"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

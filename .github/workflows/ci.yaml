@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - release
+  workflow_dispatch:  # refresh-release.yml starts it (GITHUB_TOKEN pushes trigger nothing)
 
 env:
   REGISTRY: ghcr.io

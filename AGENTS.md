@@ -67,6 +67,7 @@ Environment variables (typically loaded via `python-dotenv` from `.env`) drive t
 - Handled by GitHub Actions (`.github/workflows/ci.yaml`).
 - Triggers on pushes to the **`release`** branch.
 - Reads the application version directly from `pyproject.toml` (`grep '^version = '`), builds a Docker image, and pushes it to GHCR with a version tag only (no `latest`).
+- **Dependency refreshes release themselves** (since 2026-10-26): the base image is pinned as `python:<exact>-slim-trixie@sha256:…`, and Dependabot opens PRs for it and the Python packages. `dependabot-refresh.yml` test-builds each PR; a patch or same-tag digest bump merges itself and dispatches `refresh-release.yml`, which bumps the patch version in `pyproject.toml`, commits `release(X.Y.Z): dependency refresh`, fast-forwards `release` and runs `ci.yaml`. It only does so when every commit since `release` came from Dependabot, so unreleased work never ships by accident. Minor/major bumps stay open as PRs. Template: `it-env/templates/container-image/release-flows/` in the Kounex/it-env repo.
 
 ## Gotchas & Important Patterns
 - **Cache Update After Submit**: After a successful submit, the new entry is appended directly into `_cached_data_df` (using `pd.concat` with the row dict). Do **not** set `_cached_data_df = None` after a submit — this would trigger an unnecessary reload spinner on the overview page. Only set it to `None` as a fallback when an in-place update is not possible.
